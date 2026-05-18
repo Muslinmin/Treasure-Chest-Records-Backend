@@ -1,5 +1,6 @@
 .env
 *.db
+/data/db/database
 *.sqlite
 *.sqlite3
 *.dbf
