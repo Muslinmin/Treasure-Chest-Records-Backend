@@ -3,3 +3,4 @@
 *.sqlite
 *.sqlite3
 *.dbf
+.agent/agent-senior-developer-instructions.md
