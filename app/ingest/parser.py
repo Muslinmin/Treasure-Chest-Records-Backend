@@ -6,6 +6,7 @@ import csv
 # load_dotenv()
 
 # CSV_INBOX = os.getenv("CSV_INBOX")
+from datetime import datetime
 
 def parse_csv(filepath: Path) -> list[dict]:
     csv_file = Path(filepath)
@@ -17,6 +18,8 @@ def parse_csv(filepath: Path) -> list[dict]:
         reader = csv.DictReader(f)
         for row in reader:
             if "Transaction Date" in row:
+                dt_object = datetime.strptime(row["Transaction Date"], "%d-%b-%y")
+                row["Transaction Date"] = dt_object.date()
                 records.append(row)
     if not records:
         raise Exception(f"Records are empty ! {records}")
