@@ -5,3 +5,8 @@
 *.sqlite3
 *.dbf
 .agent/agent-senior-developer-instructions.md
+*.csv
+*.pytest_cache
+__pycache__/
+.pytest_cache/
+*.pyc
