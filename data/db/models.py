@@ -5,7 +5,7 @@ from sqlalchemy.orm import mapped_column
 from sqlalchemy import UniqueConstraint
 
 from datetime import date, datetime
-from sqlalchemy import Date
+from sqlalchemy import Date, DateTime
 
 """
 transactions
@@ -79,6 +79,6 @@ class Summary(Base):
 
     tx_count: Mapped[int] = mapped_column()
 
-    updated_at: Mapped[datetime] = mapped_column(datetime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
  
