@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 from app.db.session import SessionLocal
 from app.db.models import Transaction
 
+from app.summary import aggregator
+from datetime import date
+
 logger = logging.getLogger(__name__)
 
 
