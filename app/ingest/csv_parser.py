@@ -8,7 +8,7 @@ transactions
   amount_cents     INTEGER  NOT NULL        ← $12.50 stored as 1250
   description      TEXT
   transaction_code TEXT                     ← nullable, bank's internal code
-  ref1             TEXT                     ← vendor name, nullable
+  vendor_name             TEXT                     ← vendor name, nullable
   is_settled       BOOLEAN  NOT NULL        ← True/False only
   category         TEXT                     ← nullable, filled later
   is_category_manual BOOLEAN DEFAULT FALSE
@@ -43,10 +43,10 @@ def parse_csv(filepath: Path) -> list[dict]:
 
                 amount_cents = int()
                 if row["Debit Amount"]:
-                    amount_cents = int(float(row.pop("Debit Amount")) * 100 * -1)
+                    amount_cents = int(float(row["Debit Amount"]) * 100 * -1)
                     del row["Credit Amount"]
                 elif row["Credit Amount"]:
-                    amount_cents = int(float(row.pop("Credit Amount")) * 100)
+                    amount_cents = int(float(row["Credit Amount"]) * 100)
                     del row["Debit Amount"]
                 else:
                     logger.warning(f"Row skipped — no debit or credit amount: {row}")
@@ -58,7 +58,7 @@ def parse_csv(filepath: Path) -> list[dict]:
 
                 row_dict["transaction_code"] = row["Transaction Code"]
 
-                row_dict["ref1"] = row["Transaction Ref1"]
+                row_dict["vendor_name"] = row["Transaction Ref1"]
 
                 settled_status = row["Status"].lower()
 
@@ -69,7 +69,7 @@ def parse_csv(filepath: Path) -> list[dict]:
 
                 row_dict["category"] = None
 
-                row_dict["is_category_manual"] = None
+                row_dict["is_category_manual"] = False
                 
 
                 file_name = os.path.basename(filepath)
