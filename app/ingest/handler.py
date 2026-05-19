@@ -39,16 +39,25 @@ class CSVHandler(FileSystemEventHandler):
         filepath = Path(event.src_path)
         if filepath.suffix.lower() != ".csv":
             return
-        
+        db = None
         try:
             _wait_until_stable(filepath)
             records = parse_csv(filepath)
-            insert_records(records)
+            db = SessionLocal()
+            period = records[0]["transaction_date"].strftime("%Y-%m")
+            insert_records(db, records)
+            aggregator.recompute_summary(db, period)
+            db.commit()
             filepath.rename(Path(OUTBOX_PATH) / filepath.name)
             logger.info(f"Successfully ingested {filepath.name}")
         except Exception as e:
+            if db:
+                db.rollback()
             logger.error(f"Failed to ingest {filepath.name}: {e}")
             filepath.rename(Path(FAILED_PATH) / filepath.name)
+        finally:
+            if db:
+                db.close()
 
 def _wait_until_stable(filepath: Path):
     previous_size = -1
@@ -62,16 +71,8 @@ def _wait_until_stable(filepath: Path):
         previous_mtime = current_mtime
         time.sleep(0.5)
 
-def insert_records(records: list[dict]):
-    db = SessionLocal()
-    try:
-        for record in records:
-            transaction = Transaction(**record)
-            db.add(transaction)
-        db.commit()
-        logger.info(f"Inserted {len(records)} records")
-    except Exception as e:
-        db.rollback()
-        raise e
-    finally:
-        db.close()
+def insert_records(db, records: list[dict]):
+    for record in records:
+        transaction = Transaction(**record)
+        db.add(transaction)
+    logger.info(f"Inserted {len(records)} records")
