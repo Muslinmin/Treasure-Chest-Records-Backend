@@ -31,16 +31,20 @@ from sqlalchemy import create_engine
 
 from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
+from urllib.parse import *
+
+from app.db.models import Base
 
 
 load_dotenv()
 
-PASS_PHRASE = os.getenv("PASS_PHRASE")
+PASS_PHRASE = quote_plus(os.getenv("PASS_PHRASE"))
 DATABASE_PATH = os.getenv("DATABASE_FILEPATH")
 
 
 
 CONNECTION = f"sqlite+pysqlcipher://:{PASS_PHRASE}@/{DATABASE_PATH}"
+
 
 # an Engine, which the Session will use for connection
 # resources
@@ -52,6 +56,8 @@ def on_connect(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.close()
+
+Base.metadata.create_all(engine)
 
 
 SessionLocal  = sessionmaker(bind=engine)

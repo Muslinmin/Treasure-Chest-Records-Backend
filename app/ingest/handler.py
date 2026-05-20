@@ -3,7 +3,7 @@ from watchdog.observers import Observer
 from pathlib import Path
 import time
 import logging
-from csv_parser import parse_csv 
+from app.ingest.csv_parser import parse_csv 
 
 import os
 
@@ -13,7 +13,6 @@ from app.db.session import SessionLocal
 from app.db.models import Transaction
 
 from app.summary import aggregator
-from datetime import date
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +40,18 @@ class CSVHandler(FileSystemEventHandler):
             return
         db = None
         try:
+            logger.info("Waiting for folder stability....")
             _wait_until_stable(filepath)
             records = parse_csv(filepath)
+            logger.info("CSV parsed.....")
             db = SessionLocal()
-            period = records[0]["transaction_date"].strftime("%Y-%m")
+            logger.info("Session Created.....")
+            periods = {r["transaction_date"].strftime("%Y-%m") for r in records}
+            logger.info("Periods parsed.....")
             insert_records(db, records)
-            aggregator.recompute_summary(db, period)
+            logger.info("Records inserted.....")
+            for p in periods:
+                aggregator.recompute_summary(db, p)
             db.commit()
             filepath.rename(Path(OUTBOX_PATH) / filepath.name)
             logger.info(f"Successfully ingested {filepath.name}")

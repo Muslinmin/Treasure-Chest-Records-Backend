@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from csv_parser import parse_csv 
+from app.ingest.csv_parser import parse_csv 
 import datetime
 
 def test_parse_csv_retrieves_output():

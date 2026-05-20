@@ -31,20 +31,20 @@ class Transaction(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    record_date: Mapped[date] = mapped_column(Date)
+    transaction_date: Mapped[date] = mapped_column(Date)
 
     amount_cents: Mapped[int] = mapped_column()
 
-    #for LLM to infer
+    #for LLM to infer#
     description: Mapped[str | None] = mapped_column(String())
 
     transaction_code: Mapped[str | None] = mapped_column(String(10))
 
     vendor_name: Mapped[str | None] = mapped_column(String())
 
-    is_settled: Mapped[bool] = mapped_column(default=False)
-
     category: Mapped[str | None] = mapped_column(String(100))
+    ##################
+    is_settled: Mapped[bool] = mapped_column(default=False)
 
     is_category_manual: Mapped[bool] = mapped_column(default=False)
 
