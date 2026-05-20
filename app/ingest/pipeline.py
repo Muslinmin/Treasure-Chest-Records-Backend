@@ -47,4 +47,5 @@ def ingest_inbox(db: Session, inbox_path: Path, processed_path: Path, failed_pat
             if item.suffix == ".csv":
                 result_dict = process_file(item, db, processed_path, failed_path)
                 result.append(result_dict)
+    logger.warning(f"No valid files found in {inbox_path}")
     return result
