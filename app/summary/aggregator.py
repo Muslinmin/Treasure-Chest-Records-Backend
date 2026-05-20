@@ -13,10 +13,19 @@ from sqlalchemy import func, select
 from app.db.models import Transaction, Summary
 from sqlalchemy.dialects.sqlite import insert
 
+from datetime import datetime, date
+
+
+
 
 
 def recompute_summary(db, period: str) -> None:
     category_col = func.coalesce(Transaction.category, "Uncategorised").label("category")
+    
+    date_obj = datetime.strptime(period, "%Y-%m")
+
+    month = date_obj.month
+    year = date_obj.year
 
     stmt = (
         select(
@@ -24,7 +33,7 @@ def recompute_summary(db, period: str) -> None:
             func.sum(Transaction.amount_cents).label("total_cents"),
             func.count(Transaction.id).label("tx_count")
         )
-        .where(Transaction.transaction_date.startswith(period))
+        .where(Transaction.transaction_date >= date(year, month, 1), Transaction.transaction_date < date(year, month+1, 1))
         .group_by(category_col)
     )
     results = db.execute(stmt).all()

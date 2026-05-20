@@ -5,6 +5,8 @@ from app.db.models import Transaction
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
+from datetime import date
+
 
 def insert_records(db: Session, records: list[dict]):
     source_file = records[0]["source_file"]
@@ -17,3 +19,32 @@ def insert_records(db: Session, records: list[dict]):
         logger.info(f"Staged {len(records)} records")
     else:
         raise ValueError(f"{source_file} has already been ingested")
+    
+def get_transactions(
+    db: Session,
+    limit: int,
+    offset: int,
+    date_from: date | None,
+    date_to: date | None,
+    category: str | None,
+) -> list[Transaction]:
+    transaction_list = []
+    stmt = select(Transaction)
+    
+    if date_from is not None:
+        stmt= stmt.where(Transaction.transaction_date >= date_from)
+    
+    if date_to is not None:
+        stmt= stmt.where(Transaction.transaction_date >= date_to)
+    
+    if category is not None:
+        category_lower = category.lower()
+        stmt = stmt.where(Transaction.category == category_lower)
+
+    stmt = stmt.limit(limit).offset(offset)
+    records = db.execute(stmt)
+
+    if records:
+        for record in records:
+            list.append(record)
+    return record
