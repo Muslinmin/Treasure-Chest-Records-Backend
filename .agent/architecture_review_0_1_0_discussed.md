@@ -69,14 +69,13 @@ A personal finance backend that **ingests CSV bank exports on a manual sync trig
 | Phase | Status | Notes |
 |---|---|---|
 | DB layer | ✅ Done | `models.py`, `session.py` working |
-| Ingest pipeline | 🔄 Refactor | Logic sound; being re-shaped into `pipeline.py` (manual-sync seam) |
-| Auth | ✅ Done | `api_key.py` complete (header/comparison fixes pending) |
-| Transactions route | 🔄 Skeleton | No query logic yet |
+| `queries.py` | 🔄 Partial | `insert_records` done (with source_file duplicate guard); `get_transactions` not written |
+| `pipeline.py` | ✅ Done | `process_file` + `ingest_inbox` — e2e tested, duplicate guard confirmed |
+| `ingest.py` router | ✅ Done | Thin `POST /ingest`, e2e tested |
+| `main.py` | ✅ Done | FastAPI instance, routers, logging config (FileHandler + formatter) |
+| Auth | ✅ Done | `api_key.py` complete — header rename + hmac + startup guard still pending |
+| Transactions route | 🔄 Skeleton | No query logic, no Pydantic model yet |
 | Summary routes | ⬜ Not started | |
-| `queries.py` | ⬜ Not started | absorbs `insert_records` + `get_transactions` |
-| `pipeline.py` | ⬜ Not started | `process_file` + `ingest_inbox` |
-| `ingest.py` router | ⬜ Not started | thin `POST /ingest` |
-| `main.py` | ⬜ Not started | FastAPI instance + router registration + Uvicorn (no observer) |
 | Docker | ⬜ Not started | |
 
 ---
@@ -242,11 +241,15 @@ The transaction boundary, rollback-on-failure, and move-to-`failed/` logic from 
 ## 6. Next Build Step (agreed)
 
 Write, for review (you write first, I review):
-1. `process_file(filepath, db)` in `pipeline.py`.
-2. `ingest_inbox(db, inbox_path)` in `pipeline.py`.
-3. `insert_records` moved into `queries.py`.
+1. `get_transactions(db, limit, offset, date_from, date_to, category)` in `queries.py`.
+2. Wire it into `transactions.py` with a `TransactionResponse` Pydantic model (`from_attributes=True`, `@computed_field` for cents → dollars).
+3. `GET /summary` and `GET /summary/monthly` in `summary.py`.
 
-Leave the `POST /ingest` endpoint as a thin stub until the core is reviewed.
+Fix in parallel (medium priority, before shipping):
+- Auth header rename (`API-KEY` → `Authorization: Bearer`)
+- `hmac.compare_digest` in `api_key.py`
+- `FAST_API_KEY` startup guard
+- `aggregator.py` date filter: replace `startswith(period)` with a proper date-range bound
 
 ---
 
