@@ -13,7 +13,6 @@ The system is built for single-user, single-tenant use. It runs first on the use
 - **SQLAlchemy 2.x** — ORM for database access.
 - **Alembic** — database schema versioning and migrations.
 - **SQLite + SQLCipher** — relational database with transparent AES-256 encryption at rest. Accessed via the `sqlcipher3-binary` package and the `sqlite+pysqlcipher://` SQLAlchemy URL scheme.
-- **watchdog** — monitors the host folder for new CSV files.
 - **Python `csv` module** (stdlib) — parses CSV files row by row. No pandas dependency.
 - **Docker + Docker Compose** — packages and runs the service; portable between hosts.
 
@@ -23,9 +22,9 @@ The system is built for single-user, single-tenant use. It runs first on the use
 my-backend/
 ├── app/                  # FastAPI application code
 │   ├── main.py           # FastAPI instance + Uvicorn entrypoint
-│   ├── api/              # endpoint definitions
+│   ├── api/              # endpoint definitions (routers: transactions, summary, ingest)
 │   ├── db/               # SQLAlchemy models, session, SQLCipher setup
-│   ├── ingest/           # watchdog handler + CSV parsing
+│   ├── ingest/           # csv_parser.py + pipeline.py (manual-sync pipeline)
 │   ├── summary/          # aggregation logic
 │   └── auth/             # API key validation
 ├── alembic/              # Alembic migrations
@@ -48,11 +47,11 @@ The end-to-end pipeline from CSV to frontend is as follows:
 
 1. **CSV arrives.** The user drops a `.csv` file into `data/inbox/`, which is a bind-mounted host directory visible to the container.
 
-2. **File detection.** Watchdog raises a "file created" event. Before processing, the handler waits briefly until the file's size and modification time are stable, to ensure the file has finished being written.
+2. **Manual sync trigger.** The user taps Sync, which calls `POST /ingest`. The endpoint scans `data/inbox/` for `*.csv` files. There is no background daemon or file-system watcher — by the time the user taps Sync, the file has been stable for minutes.
 
-3. **Parsing.** The CSV is read row by row using the standard `csv` module. Each row is validated against the expected transaction schema (date, amount, category, description, etc.). Malformed rows are logged and either skipped or used to reject the entire file, depending on the chosen policy.
+3. **Parsing.** The CSV is read row by row using the standard `csv` module. Each row is validated against the expected transaction schema. If any row is malformed, the entire file is rejected and moved to `failed/` — no partial ingestion.
 
-4. **Database ingestion.** Inside a single database transaction, parsed rows are inserted into the `transactions` table of the encrypted SQLite database. Using one transaction guarantees the file is either fully ingested or not at all — no partial state.
+4. **Database ingestion.** Each file is processed in its own database transaction (one commit per file, one shared session for the batch). This means a bad file C does not roll back already-committed files A and B. The file is the unit of atomicity.
 
 5. **Summary update.** Still within the same transaction, rows in the `summary` table are upserted: monthly totals, category breakdowns, rolling averages, and any other aggregations the visualization needs. This keeps reads cheap — the frontend never recomputes from raw transactions.
 
@@ -69,15 +68,9 @@ The API exposes two categories of data:
 
 Authentication sits in front of every endpoint via an API key header, even in single-user mode, because the API is reachable by a remote frontend.
 
-## Open Decision: Pull vs. Push
+## Pull vs. Push — Decided: Pull-only for v1
 
-Whether the frontend pulls data from the backend on demand, or the backend pushes updates to the frontend in real time, is intentionally left open. Both are technically supported by the chosen stack:
-
-- A **pull** model uses standard REST endpoints (`GET /summary`, `GET /transactions?limit=...`) that the frontend calls when it loads or refreshes. Simplest to build, easiest to reason about, well-suited to a workflow where CSV imports are infrequent and the user opens the app deliberately.
-- A **push** model uses WebSockets or Server-Sent Events. When a CSV is ingested, the backend broadcasts an update so connected frontends see the new data without re-requesting. More moving parts, but the dashboard updates live.
-- A **hybrid** is also possible: REST for the initial load and historical data, plus a lightweight WebSocket/SSE channel for "data updated, refetch summary" notifications.
-
-The choice affects how step 5 (summary update) signals downstream — either by simply updating the database and waiting to be queried, or by additionally emitting an event to subscribed clients. The ingestion pipeline itself is identical either way.
+The frontend calls `GET /summary` and `GET /transactions` on load and on focus. No push channel. SSE/WebSockets are deferred — they would touch the ingest path, `main.py`, and the frontend simultaneously, and add complexity that isn't justified for a single-user app where imports happen deliberately.
 
 ## Deployment
 
