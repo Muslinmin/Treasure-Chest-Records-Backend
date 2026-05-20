@@ -28,23 +28,19 @@ def get_transactions(
     date_to: date | None,
     category: str | None,
 ) -> list[Transaction]:
-    transaction_list = []
     stmt = select(Transaction)
     
     if date_from is not None:
         stmt= stmt.where(Transaction.transaction_date >= date_from)
     
     if date_to is not None:
-        stmt= stmt.where(Transaction.transaction_date >= date_to)
+        stmt= stmt.where(Transaction.transaction_date <= date_to)
     
     if category is not None:
         category_lower = category.lower()
         stmt = stmt.where(Transaction.category == category_lower)
 
     stmt = stmt.limit(limit).offset(offset)
-    records = db.execute(stmt)
+    records = db.scalars(stmt).all()
 
-    if records:
-        for record in records:
-            list.append(record)
-    return record
+    return records
