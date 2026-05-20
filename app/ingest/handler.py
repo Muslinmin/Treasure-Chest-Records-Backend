@@ -10,8 +10,8 @@ import os
 from dotenv import load_dotenv
 
 from app.db.session import SessionLocal
-from app.db.models import Transaction
 
+from app.db.queries import insert_records
 from app.summary import aggregator
 
 logger = logging.getLogger(__name__)
@@ -76,8 +76,4 @@ def _wait_until_stable(filepath: Path):
         previous_mtime = current_mtime
         time.sleep(0.5)
 
-def insert_records(db, records: list[dict]):
-    for record in records:
-        transaction = Transaction(**record)
-        db.add(transaction)
-    logger.info(f"Inserted {len(records)} records")
+
