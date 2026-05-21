@@ -19,7 +19,8 @@ def insert_records(db: Session, records: list[dict]):
         logger.info(f"Staged {len(records)} records")
     else:
         raise ValueError(f"{source_file} has already been ingested")
-    
+
+
 def get_transactions(
     db: Session,
     limit: int,
