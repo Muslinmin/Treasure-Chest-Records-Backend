@@ -5,7 +5,10 @@ from sqlalchemy.dialects.sqlite import insert
 from datetime import date
 
 
+import logging
 
+
+logger = logging.getLogger(__name__)
 
 
 def recompute_summary(db, period: str) -> None:
@@ -17,7 +20,7 @@ def recompute_summary(db, period: str) -> None:
         end_date = date(year+1, 1, 1)
     else:
         end_date = date(year, month+1, 1)
-
+   
     stmt = (
         select(
             category_col,
@@ -42,3 +45,4 @@ def recompute_summary(db, period: str) -> None:
             set_={"total_cents": row.total_cents, "tx_count": row.tx_count}
         )
         db.execute(upsert_stmt)
+    logger.info(f"Summary aggregated for period {period}")

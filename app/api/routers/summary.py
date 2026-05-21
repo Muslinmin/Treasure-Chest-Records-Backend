@@ -12,6 +12,7 @@ from app.db import queries
 
 from datetime import datetime, date
 
+
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 

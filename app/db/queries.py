@@ -1,11 +1,13 @@
 
-import logging
-logger = logging.getLogger(__name__)
 from app.db.models import Transaction, Summary
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from datetime import date
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def insert_records(db: Session, records: list[dict]):
@@ -43,7 +45,7 @@ def get_transactions(
 
     stmt = stmt.limit(limit).offset(offset)
     records = db.scalars(stmt).all()
-
+    logger.info("Transactions retrieved!")
     return records
 
 
@@ -51,6 +53,7 @@ def get_summary_by_period(db: Session, period: str) -> list[Summary]:
     stmt = select(Summary)
     stmt = stmt.where(Summary.period == period)
     records = db.scalars(stmt).all()
+    logger.info(f"Summary for {period} retrieved!")
     return records
 
 
@@ -61,5 +64,6 @@ def get_summary_monthly(db: Session, start_period: str, end_period: str) -> list
     
 
     records = db.scalars(stmt).all()
+    logger.info(f"Summary for period range {start_period} and {end_period} retrieved!")
 
     return records

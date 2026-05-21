@@ -189,7 +189,7 @@ alembic upgrade head
 
 ---
 
-## Phase 3 — The API Layer 🔄 IN PROGRESS
+## Phase 3 — The API Layer ✅ DONE
 
 Now the database has data. Now we expose it.
 
@@ -229,64 +229,48 @@ Auth lives under `app/api/auth/`, not `app/auth/`. Routers live under `app/api/r
 
 ### 3.3 What Has Been Written
 
-**File: `app/api/auth/api_key.py`** ✅ (pending header rename)
-- Currently uses `APIKeyHeader(name="API-KEY")`. **This header name must be updated** — the `X-` prefix (RFC 6648, 2012) is deprecated and the current casing is non-standard. Agreed direction: `Authorization: Bearer <key>` via FastAPI's `HTTPBearer`, or at minimum `Api-Key` (Title-Case, no prefix). Do not rename to `X-API-Key`.
-- `verify_api_key` compares against `FAST_API_KEY` from `.env`, raises `HTTP 403` on mismatch with no detail message.
-- Needs `hmac.compare_digest` instead of `!=` (constant-time comparison — one-line fix).
-- Needs an import-time guard: if `FAST_API_KEY` is unset/`None`, raise at startup — not silently 403 every request.
-- Auth is applied at the **router level**: `APIRouter(dependencies=[Depends(verify_api_key)])` — not per-route.
+**File: `app/api/auth/api_key.py`** ✅
+- Uses `HTTPBearer` — client sends `Authorization: Bearer <key>`.
+- `verify_api_key(api_key: HTTPAuthorizationCredentials)` — extracts `.credentials`, compares against `FAST_API_KEY` using `hmac.compare_digest` (constant-time).
+- Import-time guard: raises `RuntimeError("FAST_API_KEY is not set")` if env var is missing.
+- Auth applied at router level: `APIRouter(dependencies=[Depends(verify_api_key)])`.
 
 **File: `app/db/queries.py`** ✅
-- `insert_records(db, records)` — stages Transaction objects into the session (does not commit). Checks `source_file` before inserting: if any transaction with the same `source_file` already exists, raises `ValueError("{file} has already been ingested")`. Log says "Staged N records".
-- `get_transactions(...)` — NOT written yet.
+- `insert_records(db, records)` — stages Transaction objects. Raises `ValueError` if `source_file` already ingested.
+- `get_transactions(db, limit, offset, date_from, date_to, category) -> list[Transaction]` — conditional filters, `db.scalars(stmt).all()`.
+- `get_summary_by_period(db, period) -> list[Summary]` — exact period match.
+- `get_summary_monthly(db, start_period, end_period) -> list[Summary]` — string range on `Summary.period`.
 
 **File: `app/ingest/pipeline.py`** ✅ e2e tested
-- `process_file(filepath, db, processed_path, failed_path) -> dict` — parse → insert → recompute → commit → move to `processed/`. Catches its own exceptions, rolls back, guards the failed-move, always returns a result dict.
-- `ingest_inbox(db, inbox_path, processed_path, failed_path) -> list[dict]` — iterates inbox, calls `process_file` per `.csv`, returns per-file report. Logs a warning if no valid files found.
+- `process_file(filepath, db, processed_path, failed_path) -> dict`
+- `ingest_inbox(db, inbox_path, processed_path, failed_path) -> list[dict]`
 
-**File: `app/api/routers/ingest.py`** ✅
-- Thin `POST /ingest`. Sources all three paths from env vars server-side. Calls `ingest_inbox`, returns the result list. Router-level auth.
+**File: `app/api/routers/ingest.py`** ✅ e2e tested
+- Thin `POST /ingest`. Sources all paths from env vars. Router-level auth.
 
-**File: `app/api/routers/transactions.py`** ✅ skeleton
-```
-GET /transactions
-  Query params: retrieve_limit (int, default 50), offset (int, default 0),
-                date_from (date | None), date_to (date | None),
-                category (str | None)
-  Body: pass — not yet wired to queries.get_transactions
-```
+**File: `app/api/routers/transactions.py`** ✅ e2e tested
+- `GET /transactions` with `TransactionResponse(BaseModel)` — `from_attributes=True`, `@computed_field amount` (cents → dollars).
+- Query params: `retrieve_limit` (default 50), `offset` (default 0), `date_from`, `date_to`, `category`.
+
+**File: `app/api/routers/summary.py`** ✅ e2e tested
+- `GET /summary?period=` — defaults to current month via `date.today().strftime("%Y-%m")`.
+- `GET /summary/monthly` — computes `start_period = date(year-1, month, 1)`, returns last 12 months.
+- `SummaryResponse(BaseModel)` — `from_attributes=True`, `@computed_field amount`.
+
+**File: `app/summary/aggregator.py`** ✅
+- `recompute_summary(db, period)` — date range filter (not `startswith`), upserts into `Summary`.
+- Parses period with `year, month = map(int, period.split("-"))`. December handled: `date(year+1, 1, 1)`.
 
 **File: `app/main.py`** ✅
-- FastAPI instance, registers all three routers (transactions, summary, ingest).
-- Logging: `FileHandler("app.log")` + custom formatter (`asctime`, `levelname`, `filename`, `lineno`, `message`) attached to the `app` namespace logger at DEBUG level. Terminal output via Uvicorn's default handler.
-- Uvicorn runs on `127.0.0.1:8000`, `reload=False`.
+- Registers all three routers. Logging to `app.log`. Uvicorn on `127.0.0.1:8000`.
 
-### 3.4 What Still Needs to Be Written
+### 3.4 Checkpoint Questions (all answered)
 
-**File: `app/db/queries.py`** — add `get_transactions`
-A `get_transactions(db, limit, offset, date_from, date_to, category) -> list[Transaction]` function that builds a conditional SQLAlchemy `select` statement. Each optional filter is only applied if the caller passes a non-None value.
-
-**File: `app/api/routers/transactions.py`** — wire the query + Pydantic response model
-- Call `queries.get_transactions(...)` in the route body.
-- Define `TransactionResponse(BaseModel)` with `model_config = ConfigDict(from_attributes=True)` and a `@computed_field` for cents → dollars conversion.
-- Set `response_model=list[TransactionResponse]`.
-
-**File: `app/api/routers/summary.py`** — implement both routes
-```
-GET /summary
-  Query params: period (str, optional — defaults to current month)
-  Returns: list of { period, category, total_cents, tx_count }
-
-GET /summary/monthly
-  Returns: last 12 months of totals across all categories
-```
-
-**Checkpoint:** Before moving to Phase 4, you must be able to answer:
-- What is dependency injection and why is it better than importing a global `db` object?
-- Why does the API return `amount` in dollars even though it's stored in cents?
-- Why does `process_file` receive a session rather than create one internally, and what does that buy us?
-- Why is there one session for the whole batch but one `commit()` per file? What would break if you opened a new session per file?
-- Why is the inbox path sourced from server-side config and not accepted from the HTTP request?
+- **Dependency injection vs global db?** — Caller controls the session lifecycle. `get_transactions` participates in whatever transaction the caller owns; it doesn't create or close sessions itself.
+- **Why dollars in the API?** — Cents is an internal storage detail. The API boundary is where the conversion happens — clients should never need to know how data is stored.
+- **Why does `process_file` receive a session?** — Same function can be called by the route, a test, or a future adapter without changing its logic. Caller owns the lifecycle.
+- **One session, one commit per file?** — `commit()` doesn't close the session; SQLAlchemy starts a fresh transaction on the next write. Opening a new session per file would break the caller's ownership contract and add unnecessary overhead.
+- **Inbox path from server config?** — Path traversal risk. If the client supplied the path, a malicious caller could point the server at any directory on the filesystem.
 
 ---
 
@@ -376,18 +360,13 @@ If parsing fails, the entire file moves to `failed/`. Partial ingestion creates 
 - Phase 0 ✅
 - Phase 1 ✅
 - Phase 2 ✅ — `csv_parser.py`, `aggregator.py`, `pipeline.py` done; `handler.py` retired; e2e ingest tested and passing
-- Phase 3 🔄 — `queries.py` (insert_records done, get_transactions not written); `ingest.py` ✅; `main.py` ✅; `transactions.py` skeleton only; `summary.py` stub only; auth header rename pending
+- Phase 3 ✅ — all routes done and e2e tested; auth on `Authorization: Bearer`; all checkpoint questions answered
 - Phase 4 ⬜ — Docker not started
 
 ## Next Build Step
 
-Write, for review (junior developer writes first, senior developer reviews):
-1. `get_transactions(db, limit, offset, date_from, date_to, category)` in `queries.py`
-2. Wire it into `transactions.py` with a Pydantic `TransactionResponse` model (cents → dollars `@computed_field`)
-3. `summary.py` routes (`GET /summary` and `GET /summary/monthly`)
-
-Fix before or alongside:
-- Auth header rename (`API-KEY` → `Authorization: Bearer`)
-- `hmac.compare_digest` in `api_key.py`
-- `FAST_API_KEY` startup guard in `api_key.py`
-- `aggregator.py` date filter (`startswith` → range bounds)
+Phase 4 — Docker. Junior developer reads the Phase 4 reading list first, then writes:
+1. `requirements.txt` — `pip freeze` from working venv, pin every version
+2. `Dockerfile` — `python:3.11-slim`, layer order matters for cache
+3. `docker-compose.yml` — bind mount `./data`, `env_file`, `restart: unless-stopped`
+4. `.dockerignore` — exclude `data/`, `.env`, `__pycache__`, `.git`
