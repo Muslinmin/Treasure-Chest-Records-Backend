@@ -8,7 +8,7 @@ from fastapi import Depends
 from app.db.session import get_db
 
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict
 from app.db import queries
 
 
@@ -27,12 +27,6 @@ class TransactionResponse(BaseModel):
     is_settled: bool
     is_category_manual : bool
     source_file: str | None
-
-    
-    @computed_field
-    @property
-    def amount(self) -> float:
-        return self.amount_cents/100
 
 
 @router.get("/transactions", tags=["transactions"], response_model=list[TransactionResponse])
