@@ -6,6 +6,8 @@ from app.api.auth.api_key import verify_api_key
 
 from pydantic import BaseModel, ConfigDict, computed_field
 
+from app.db import queries
+
 
 
 from datetime import datetime, date
@@ -31,9 +33,14 @@ class SummaryResponse(BaseModel):
 def get_summary(db: Session = Depends(get_db), period: str | None = None):
     if period is None:
         period = date.today().strftime("%Y-%m")
-    pass
+    result = queries.get_summary_by_period(db, period)
+    return result
 
 
 @router.get("/summary/monthly", tags=["summary"], response_model=list[SummaryResponse])
 def get_monthly_summary(db: Session = Depends(get_db)):
-    pass
+    today = date.today()
+    end_period = today.strftime("%Y-%m")
+    start_period = date(today.year - 1, today.month, 1).strftime("%Y-%m")
+    result = queries.get_summary_monthly(db, start_period, end_period)
+    return result

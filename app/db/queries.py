@@ -48,11 +48,18 @@ def get_transactions(
 
 
 def get_summary_by_period(db: Session, period: str) -> list[Summary]:
-    # select all Summary rows where period matches
-    # return as a list
-    pass
+    stmt = select(Summary)
+    stmt = stmt.where(Summary.period == period)
+    records = db.scalars(stmt).all()
+    return records
+
 
 def get_summary_monthly(db: Session, start_period: str, end_period: str) -> list[Summary]:
-    # select all Summary rows where period >= start_period AND period <= end_period
-    # return as a list
-    pass
+    stmt = select(Summary)
+    
+    stmt= stmt.where(Summary.period >= start_period, Summary.period <= end_period)
+    
+
+    records = db.scalars(stmt).all()
+
+    return records

@@ -1,14 +1,3 @@
-"""
-1. Query transactions WHERE record_date starts with period (e.g. "2025-04")
-2. Group the results by category
-3. For each category group:
-   - sum the amount_cents
-   - count the rows
-4. Upsert each group into summary table
-
-"""
-
-
 from sqlalchemy import func, select
 from app.db.models import Transaction, Summary
 from sqlalchemy.dialects.sqlite import insert
