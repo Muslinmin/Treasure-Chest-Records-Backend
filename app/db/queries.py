@@ -1,7 +1,7 @@
 
 import logging
 logger = logging.getLogger(__name__)
-from app.db.models import Transaction
+from app.db.models import Transaction, Summary
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
@@ -45,3 +45,14 @@ def get_transactions(
     records = db.scalars(stmt).all()
 
     return records
+
+
+def get_summary_by_period(db: Session, period: str) -> list[Summary]:
+    # select all Summary rows where period matches
+    # return as a list
+    pass
+
+def get_summary_monthly(db: Session, start_period: str, end_period: str) -> list[Summary]:
+    # select all Summary rows where period >= start_period AND period <= end_period
+    # return as a list
+    pass
