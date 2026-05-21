@@ -1,0 +1,14 @@
+# Security: Never bake secrets or live data into the image
+data/
+.env
+
+# Python Cache: Avoid copying host machine bytecode
+__pycache__/
+*.pyc
+
+# Version Control: Unnecessary for runtime
+.git/
+.gitignore
+
+# Testing: Keeps the production image footprint small
+tests/

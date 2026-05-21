@@ -274,7 +274,7 @@ Auth lives under `app/api/auth/`, not `app/auth/`. Routers live under `app/api/r
 
 ---
 
-## Phase 4 — Docker
+## Phase 4 — Docker ✅ DONE
 
 ### 4.1 Read First
 
@@ -285,33 +285,37 @@ Auth lives under `app/api/auth/`, not `app/auth/`. Routers live under `app/api/r
 | `.dockerignore` | https://docs.docker.com/engine/reference/builder/#dockerignore-file | Always exclude `data/`, `.env`, `__pycache__`, `.git` |
 | Multi-arch builds | https://docs.docker.com/build/building/multi-platform/ | We'll need `linux/arm64` for the Pi later |
 
-### 4.2 What You Will Write
+### 4.2 What Was Written
+
+**`requirements.txt`** — direct deps only; pip resolves transitive deps at build time.
+```
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
+sqlalchemy==2.0.49
+sqlcipher3-binary==0.5.7
+pydantic==2.13.4
+python-dotenv==1.2.2
+alembic==1.18.4
+```
 
 **`Dockerfile`** — key decisions:
-- Base image: `python:3.11-slim` (pin the exact digest for reproducibility).
-- Install system deps needed by `sqlcipher3-binary` (libsqlcipher-dev on Debian).
-- Copy `requirements.txt`, run `pip install`, then copy the app source. This order matters for Docker layer caching.
-- Expose port 8000.
-- `CMD ["python", "-m", "app.main"]`
+- Base image: `python:3.12-slim` (matches host Python version).
+- `sqlcipher3-binary` bundles the SQLCipher C library — no `apt-get` system deps needed.
+- Layer order: `COPY requirements.txt` → `RUN pip install` → `COPY . .` — code changes don't bust the pip cache.
+- `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]`
 
-**`docker-compose.yml`** — key decisions:
-- Bind mount `./data` to `/app/data` inside the container.
+**`docker-compose.yaml`** — key decisions:
+- Bind mount `./data:/app/data` — live database and CSVs on the host, visible inside the container.
 - `env_file: ./data/.env` to inject environment variables.
 - `restart: unless-stopped` so it comes back after a reboot.
-- No ports exposed to `0.0.0.0` if you're using Tailscale — bind only to `127.0.0.1:8000` on the host.
+- `ports: 127.0.0.1:8000:8000` — bound to localhost only; Tailscale handles external routing.
 
-**`requirements.txt`** — pin every version. Example:
-```
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-sqlalchemy==2.0.30
-alembic==1.13.1
-sqlcipher3-binary==0.5.3
-python-dotenv==1.0.1
-pydantic==2.7.1
-```
+**`.dockerignore`** — excludes `data/`, `.env`, `__pycache__/`, `*.pyc`, `.git/`, `.gitignore`, `tests/`.
 
-Run `pip freeze > requirements.txt` after your virtual env is confirmed working. Never leave versions unpinned.
+**Key decisions made during Phase 4:**
+- Direct-deps-only `requirements.txt` chosen over full `pip freeze` output — simpler to maintain for a personal project; reproducibility risk accepted.
+- `sqlcipher3-binary` (not `sqlcipher3`) confirmed — bundles the C library, no system-level install needed in the container.
+- Python version in Dockerfile set to `3.12-slim` to match the host development environment.
 
 ---
 
@@ -361,12 +365,12 @@ If parsing fails, the entire file moves to `failed/`. Partial ingestion creates 
 - Phase 1 ✅
 - Phase 2 ✅ — `csv_parser.py`, `aggregator.py`, `pipeline.py` done; `handler.py` retired; e2e ingest tested and passing
 - Phase 3 ✅ — all routes done and e2e tested; auth on `Authorization: Bearer`; all checkpoint questions answered
-- Phase 4 ⬜ — Docker not started
+- Phase 4 ✅ — `requirements.txt`, `Dockerfile`, `docker-compose.yaml`, `.dockerignore` all written
 
 ## Next Build Step
 
-Phase 4 — Docker. Junior developer reads the Phase 4 reading list first, then writes:
-1. `requirements.txt` — `pip freeze` from working venv, pin every version
-2. `Dockerfile` — `python:3.11-slim`, layer order matters for cache
-3. `docker-compose.yml` — bind mount `./data`, `env_file`, `restart: unless-stopped`
-4. `.dockerignore` — exclude `data/`, `.env`, `__pycache__`, `.git`
+Run and verify the Docker build:
+```powershell
+docker compose up --build
+```
+Watch for errors in the build output. First run pulls the base image and installs deps (slow). Once running, hit `http://127.0.0.1:8000/docs` to confirm the API is live inside the container.
