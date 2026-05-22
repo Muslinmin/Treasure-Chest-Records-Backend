@@ -1,7 +1,7 @@
 fastapi==0.136.1
 uvicorn[standard]==0.47.0
 sqlalchemy==2.0.49
-sqlcipher3-binary==0.5.7
+sqlcipher3-binary
 pydantic==2.13.4
 python-dotenv==1.2.2
 alembic==1.18.4

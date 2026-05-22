@@ -6,8 +6,9 @@ services:
     container_name: fastapi-backend
     restart: unless-stopped
     env_file:
-      - ./data/.env
+      - .env
     volumes:
       - ./data:/app/data
+      - ./logs:/logs
     ports:
-      - "127.0.0.1:8000:8000"
+      - "0.0.0.0:8000:8000"

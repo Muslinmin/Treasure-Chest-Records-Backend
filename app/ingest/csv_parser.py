@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 def parse_csv(filepath: Path) -> list[dict]:
     csv_file = Path(filepath)
     records = list()
-    with csv_file.open(mode="r", encoding="utf-8") as f:
+    with csv_file.open(mode="r", encoding="utf-8-sig") as f:
         for line in f:
-            if line.startswith("Transaction Date"):
+            if "Transaction Date" in line:
                 headers = next(csv.reader([line]))
                 break
         reader = csv.DictReader(f, fieldnames=headers)
@@ -38,7 +38,7 @@ def parse_csv(filepath: Path) -> list[dict]:
             if not row["Transaction Date"]:
                 continue
             else:
-                dt_object = datetime.strptime(row["Transaction Date"], "%d-%b-%y")
+                dt_object = datetime.strptime(row["Transaction Date"], "%d %b %Y")
                 row_dict["transaction_date"] = dt_object.date()
 
                 amount_cents = int()

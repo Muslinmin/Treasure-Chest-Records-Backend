@@ -12,7 +12,7 @@ _fmt = logging.Formatter(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-_file_handler = logging.FileHandler("app.log")
+_file_handler = logging.FileHandler("/logs/app.log")
 _file_handler.setLevel(logging.DEBUG)
 _file_handler.setFormatter(_fmt)
 

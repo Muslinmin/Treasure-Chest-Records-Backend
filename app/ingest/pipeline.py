@@ -40,6 +40,8 @@ def process_file(filepath: Path, db: Session, processed_path: Path, failed_path:
 
 
 def ingest_inbox(db: Session, inbox_path: Path, processed_path: Path, failed_path: Path) -> list[dict]:
+    logger.debug("is this line called?")
+    logger.debug(f"paths: {inbox_path} \n {processed_path} \n {failed_path} \n")
     result = []
     for item in inbox_path.iterdir():
         if item.is_file():
