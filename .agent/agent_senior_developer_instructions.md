@@ -366,11 +366,30 @@ If parsing fails, the entire file moves to `failed/`. Partial ingestion creates 
 - Phase 2 ✅ — `csv_parser.py`, `aggregator.py`, `pipeline.py` done; `handler.py` retired; e2e ingest tested and passing
 - Phase 3 ✅ — all routes done and e2e tested; auth on `Authorization: Bearer`; all checkpoint questions answered
 - Phase 4 ✅ — `requirements.txt`, `Dockerfile`, `docker-compose.yaml`, `.dockerignore` all written
+- Phase 5 ✅ — Docker deployment verified; container running; CSV ingest confirmed end-to-end in production
 
-## Next Build Step
+## 🎉 v1.0 — First Iteration Complete
 
-Run and verify the Docker build:
-```powershell
-docker compose up --build
-```
-Watch for errors in the build output. First run pulls the base image and installs deps (slow). Once running, hit `http://127.0.0.1:8000/docs` to confirm the API is live inside the container.
+The first iteration of Treasure Chest Records Backend is fully deployed and working. Summary of what was shipped:
+
+- Encrypted SQLite database (SQLCipher + WAL mode) persisted via bind mount
+- CSV ingest pipeline: parse → insert → recompute summary → move to processed/failed
+- REST API: `POST /ingest`, `GET /transactions`, `GET /summary`, `GET /summary/monthly`
+- Bearer token auth on all routes
+- Dockerised and running via `docker compose up -d`
+- Logs written to `logs/app.log` on the host
+
+**Known fixes applied during deployment:**
+- `sqlcipher3` → `sqlcipher3-binary` (no system C library needed in container)
+- Log path fixed to `/logs/app.log` with `./logs:/logs` bind mount
+- CSV parser: BOM handled via `encoding="utf-8-sig"`
+- CSV parser: `startswith` → `in` check (header row is quoted)
+- CSV parser: date format corrected to `"%d %b %Y"` (was `"%d-%b-%y"`)
+- `.db-shm` / `.db-wal` untracked from git index
+
+## Next Steps (v2 candidates)
+
+- Set up Alembic before any schema changes — `create_all` won't apply column additions to existing tables
+- Add `GET /transactions/{id}`, `PATCH /transactions/{id}/category` for manual categorisation
+- Consider Tailscale + reverse proxy (nginx) if exposing beyond localhost
+- Multi-bank CSV support via `mapping.json` per bank (no code changes per new bank)
