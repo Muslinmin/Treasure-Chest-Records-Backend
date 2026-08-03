@@ -19,6 +19,8 @@ transactions
   category         TEXT                     ← nullable, filled later
   is_category_manual BOOLEAN DEFAULT FALSE
   source_file      TEXT                     ← which CSV this came from
+  fingerprint      TEXT                     ← sha256 of the row's stable identity
+                                              fields; indexed, NOT unique
 
 """
 
@@ -49,6 +51,12 @@ class Transaction(Base):
     is_category_manual: Mapped[bool] = mapped_column(default=False)
 
     source_file: Mapped[str | None] = mapped_column(String())
+
+    # sha256 over transaction_date, amount_cents, description, transaction_code,
+    # vendor_name — the fields that identify a transaction across re-exports.
+    # Deliberately NOT unique: two identical purchases on the same day are
+    # legitimate and share a fingerprint. Dedupe compares counts, not existence.
+    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
 
 
 """
