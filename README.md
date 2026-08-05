@@ -80,7 +80,7 @@ categorisation on whatever became uncategorised as a result — one call does bo
 |---|---|---|---|
 | `date_from` | `YYYY-MM-DD` | none | inclusive |
 | `date_to` | `YYYY-MM-DD` | none | inclusive |
-| `category` | string | none | see caveat below |
+| `category` | string | none | case-insensitive exact match |
 | `retrieve_limit` | int | `50` | |
 | `offset` | int | `0` | |
 
@@ -99,12 +99,6 @@ categorisation on whatever became uncategorised as a result — one call does bo
   "is_category_manual": false
 }
 ```
-
-> **Known issue — the `category` filter does not currently work.** The server lower-cases the
-> query value before comparing it against the stored value, but stored categories are Title Case
-> (`"Groceries"`, `"Transfer In"`), and SQLite's default text comparison is case-sensitive. In
-> practice `?category=Groceries` (or any casing) returns zero rows. Filter client-side on the
-> unfiltered result until this is fixed server-side.
 
 ---
 
@@ -207,7 +201,6 @@ deletable), or `reassign_to` isn't a real/active category.
 See [`.agent/architecture_and_progress.md`](.agent/architecture_and_progress.md) for the full list.
 The ones that actually affect client behavior:
 
-- `GET /transactions?category=` doesn't filter correctly (see above) — filter client-side for now.
 - `POST /categories`'s `carved_from` doesn't do what its name implies yet (validation only).
 - `POST /ingest`'s response shape changed to an object (see the breaking-change note above).
 - LLM-driven categorisation may take a noticeable pause on the *first* `POST /ingest` after a large

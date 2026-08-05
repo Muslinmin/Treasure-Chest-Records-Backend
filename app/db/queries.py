@@ -108,8 +108,7 @@ def get_transactions(
         stmt= stmt.where(Transaction.transaction_date <= date_to)
     
     if category is not None:
-        category_lower = category.lower()
-        stmt = stmt.where(Transaction.category == category_lower)
+        stmt = stmt.where(func.lower(Transaction.category) == category.lower())
 
     stmt = stmt.limit(limit).offset(offset)
     records = db.scalars(stmt).all()
