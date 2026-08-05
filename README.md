@@ -107,6 +107,7 @@ categorisation on whatever became uncategorised as a result — one call does bo
 | Query param | Type | Default |
 |---|---|---|
 | `period` | `YYYY-MM` | current month |
+| `rollup` | bool | `false` |
 
 **Response `200`:** array of
 
@@ -123,10 +124,21 @@ categorisation on whatever became uncategorised as a result — one call does bo
 One row per category present in that period — categories with zero transactions in the period
 don't appear. Sum `total_cents` across the array yourself if you need a period total.
 
+`?rollup=true` groups rows by parent category instead of returning every leaf: a `"Coffee"` row and
+a `"Dining & Takeout (Other)"` row both fold into one `"Dining & Takeout"` row with summed
+`total_cents`/`tx_count`. Categories with no parent (and no hierarchy at all) are unaffected — every
+row appears exactly once either way, this only changes which name/grouping it appears under. See
+[Category Hierarchy](.agent/architecture_and_progress.md#category-hierarchy-v13)
+below.
+
 ## `GET /summary/monthly`
 
-No query params — always the trailing 12 months from today. Same row shape as `GET /summary`, one
-row per `(period, category)` combination across the whole window.
+| Query param | Type | Default |
+|---|---|---|
+| `rollup` | bool | `false` |
+
+Otherwise no query params — always the trailing 12 months from today. Same row shape and `rollup`
+behaviour as `GET /summary`, one row per `(period, category)` combination across the whole window.
 
 ---
 
@@ -149,12 +161,15 @@ re-ingesting anything.
 **Response `200`:** array of
 
 ```json
-{"name": "Dining & Takeout", "is_system": false, "is_active": true, "created_at": "2026-08-05T00:00:00"}
+{"name": "Coffee", "is_system": false, "is_active": true, "created_at": "2026-08-05T00:00:00", "parent_name": "Dining & Takeout"}
 ```
 
-`is_system: true` categories (`Unknown`, `Transfer In`, `Transfer Out`, `Interest`, `Income`) are
-reserved and can never be deleted or deactivated. Use this endpoint to populate any category
-picker — don't hardcode the list.
+`parent_name` is `null` for a top-level category. A category with children (a "stem") holds no
+transactions of its own — see
+[Category Hierarchy](.agent/architecture_and_progress.md#category-hierarchy-v13). `is_system: true`
+categories (`Unknown`, `Transfer In`, `Transfer Out`, `Interest`, `Income`) are reserved and can
+never be deleted or deactivated. Use this endpoint to populate any category picker — don't
+hardcode the list.
 
 ## `POST /categories`
 
@@ -164,17 +179,39 @@ picker — don't hardcode the list.
 {"name": "Coffee", "carved_from": ["Dining & Takeout"]}
 ```
 
-- `carved_from` is optional (defaults to `[]`).
-- `[]` (or omitted) → plain new category, no other effect.
-- Non-empty → **validated only.** The server checks every listed parent category exists and is
-  active, but currently does **not** retroactively re-derive or reassign any transactions already
-  filed under those parents. Functionally identical to `carved_from: []` today — treat it as
-  future-reserved, not working, behaviour.
+- `carved_from` is optional (defaults to `[]`), and supports **at most one** parent — multi-parent
+  categories aren't supported.
+- `[]` (or omitted) → plain new top-level category, no other effect.
+- One entry → carves `name` out as a child leaf of that parent. The parent must currently be
+  top-level (carving from an already-carved leaf is rejected). The first carve under a given parent
+  promotes it to a stem and auto-creates a `"<Parent> (Other)"` catch-all sibling that absorbs
+  everything the parent held directly; every merchant already filed under the parent (or, on later
+  carves, under the catch-all) is then re-derived — reassigned to `name` if it belongs there, left
+  in the catch-all otherwise. Every re-derivation decision goes through the LLM (batched, same as
+  `POST /ingest`) — a merchant's own name is not treated as reliable evidence of what a purchase
+  there was for (e.g. "May's Coffee" could easily have sold a sandwich, not coffee), so there's no
+  free shortcut and the call may take a moment.
 
-**Response `201`/`200`:** the created `CategoryResponse` (same shape as `GET /categories`).
+**Response `201`/`200`:**
 
-**Errors:** `400 {"detail": "..."}` if the name already exists, or any `carved_from` entry isn't a
-real, active category.
+```json
+{
+  "category": {"name": "Coffee", "is_system": false, "is_active": true, "created_at": "2026-08-05T00:00:00", "parent_name": "Dining & Takeout"},
+  "catch_all_created": "Dining & Takeout (Other)",
+  "rederivation": {
+    "candidates": 12, "resolved_by_llm": 7,
+    "llm_batches_attempted": 1, "llm_batches_failed": 0
+  },
+  "recomputed_periods": ["2026-04", "2026-05"]
+}
+```
+
+`catch_all_created` is `null` for a plain `carved_from: []` addition, and also `null` on the
+*second* carve under a parent (the catch-all already exists from the first). `rederivation` is
+`null` whenever `carved_from` is empty.
+
+**Errors:** `400 {"detail": "..."}` — the name already exists, `carved_from` has more than one
+entry, or its single entry isn't a real/active/currently-top-level category.
 
 ## `DELETE /categories/{name}`
 
@@ -192,7 +229,8 @@ real, active category.
   ```
 
 **Errors:** `400 {"detail": "..."}` — the category doesn't exist, is a system category (never
-deletable), or `reassign_to` isn't a real/active category.
+deletable), has subcategories carved from it (delete/reassign those first), `reassign_to` isn't a
+real/active category, or `reassign_to` itself has subcategories (a stem can't hold transactions).
 
 ---
 
@@ -201,7 +239,11 @@ deletable), or `reassign_to` isn't a real/active category.
 See [`.agent/architecture_and_progress.md`](.agent/architecture_and_progress.md) for the full list.
 The ones that actually affect client behavior:
 
-- `POST /categories`'s `carved_from` doesn't do what its name implies yet (validation only).
+- `POST /categories`'s `carved_from` is now fully functional (creates the parent/child link,
+  auto-generates the `"(Other)"` catch-all, and re-derives affected merchants) — see
+  [Category Hierarchy](.agent/architecture_and_progress.md#category-hierarchy-v13) in the
+  architecture doc. It has never run against the real (private) transaction history or a real LLM
+  provider, only synthetic fixtures and a stub categoriser — see Known Gaps there.
 - `POST /ingest`'s response shape changed to an object (see the breaking-change note above).
 - LLM-driven categorisation may take a noticeable pause on the *first* `POST /ingest` after a large
   backfill (many new merchants in one batch) — subsequent calls are fast (steady-state is usually

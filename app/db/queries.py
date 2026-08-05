@@ -116,15 +116,55 @@ def get_transactions(
     return records
 
 
-def get_summary_by_period(db: Session, period: str) -> list[Summary]:
+def _rollup_summary_rows(db: Session, records: list[Summary]) -> list[dict]:
+    """Group leaf ``Summary`` rows by ``COALESCE(parent_name, category)`` and sum.
+
+    Never stored — computed at read time over whatever rows the period query
+    already returned (a handful per period regardless of transaction count),
+    so the delete-and-reinsert write path in aggregator.py stays untouched.
+    A category name with no matching row in ``categories`` (e.g. the
+    aggregator's synthetic "Uncategorised") rolls up to itself.
+    """
+    if not records:
+        return []
+
+    id_to_name = dict(db.execute(select(Category.id, Category.name)).all())
+    name_to_parent_id = dict(db.execute(select(Category.name, Category.parent_id)).all())
+
+    grouped: dict[tuple[str, str], dict] = {}
+    for row in records:
+        parent_id = name_to_parent_id.get(row.category)
+        group_name = id_to_name.get(parent_id, row.category) if parent_id else row.category
+        bucket_key = (row.period, group_name)
+        bucket = grouped.setdefault(
+            bucket_key,
+            {
+                "period": row.period,
+                "category": group_name,
+                "total_cents": 0,
+                "tx_count": 0,
+                "updated_at": row.updated_at,
+            },
+        )
+        bucket["total_cents"] += row.total_cents
+        bucket["tx_count"] += row.tx_count
+        if row.updated_at > bucket["updated_at"]:
+            bucket["updated_at"] = row.updated_at
+
+    return list(grouped.values())
+
+
+def get_summary_by_period(db: Session, period: str, rollup: bool = False) -> list[Summary] | list[dict]:
     stmt = select(Summary)
     stmt = stmt.where(Summary.period == period)
     records = db.scalars(stmt).all()
     logger.info(f"Summary for {period} retrieved!")
-    return records
+    return _rollup_summary_rows(db, records) if rollup else records
 
 
-def get_summary_monthly(db: Session, start_period: str, end_period: str) -> list[Summary]:
+def get_summary_monthly(
+    db: Session, start_period: str, end_period: str, rollup: bool = False
+) -> list[Summary] | list[dict]:
     stmt = select(Summary)
 
     stmt= stmt.where(Summary.period >= start_period, Summary.period <= end_period)
@@ -133,7 +173,7 @@ def get_summary_monthly(db: Session, start_period: str, end_period: str) -> list
     records = db.scalars(stmt).all()
     logger.info(f"Summary for period range {start_period} and {end_period} retrieved!")
 
-    return records
+    return _rollup_summary_rows(db, records) if rollup else records
 
 
 def seed_categories(db: Session) -> None:
@@ -161,33 +201,153 @@ def list_categories(db: Session, include_inactive: bool = False) -> list[Categor
     return db.scalars(stmt).all()
 
 
+def list_categories_with_parent_names(db: Session, include_inactive: bool = False) -> list[dict]:
+    """``list_categories`` plus each row's parent name, for the API surface.
+
+    Looked up against every category (not just the filtered set), so a child
+    row still resolves its parent's name even if the parent itself is
+    filtered out of an ``include_inactive=False`` listing.
+    """
+    categories = list_categories(db, include_inactive)
+    id_to_name = dict(db.execute(select(Category.id, Category.name)).all())
+    return [
+        {
+            "name": c.name,
+            "is_system": c.is_system,
+            "is_active": c.is_active,
+            "created_at": c.created_at,
+            "parent_name": id_to_name.get(c.parent_id),
+        }
+        for c in categories
+    ]
+
+
+def list_leaf_categories(db: Session, include_inactive: bool = False) -> list[Category]:
+    """Categories eligible to hold transactions directly — excludes stems.
+
+    Once something has been carved from a category it is permanently a stem:
+    a pure grouping label with zero transactions of its own (§Planned:
+    Category Hierarchy). The rules/LLM taxonomy must never offer a stem as an
+    answer — a fresh transaction landing directly on it would double-count
+    against its own children once ``?rollup=true`` sums by parent.
+    """
+    stems = select(Category.parent_id).where(Category.parent_id.is_not(None))
+    stmt = select(Category).where(Category.id.notin_(stems))
+    if not include_inactive:
+        stmt = stmt.where(Category.is_active.is_(True))
+    stmt = stmt.order_by(Category.name)
+    return db.scalars(stmt).all()
+
+
 def get_category(db: Session, name: str) -> Category | None:
     return db.scalars(select(Category).where(Category.name == name)).first()
 
 
-def create_category(db: Session, name: str, carved_from: list[str]) -> Category:
-    """Add a category to the taxonomy (§10.5).
+def get_children(db: Session, parent_name: str) -> list[Category]:
+    parent = get_category(db, parent_name)
+    if parent is None:
+        return []
+    return db.scalars(select(Category).where(Category.parent_id == parent.id)).all()
+
+
+def has_children(db: Session, category: Category) -> bool:
+    return db.scalar(select(Category.id).where(Category.parent_id == category.id).limit(1)) is not None
+
+
+def catch_all_name(stem_name: str) -> str:
+    return f"{stem_name} (Other)"
+
+
+def create_category(db: Session, name: str, carved_from: list[str]) -> dict:
+    """Add a category to the taxonomy (§10.5), carving it out of a parent if asked.
 
     ``carved_from`` states scope: ``[]`` is a pure addition — only merchants
-    seen for the first time after this point can receive it. A non-empty list
-    means "break down these parents"; re-deriving the merchants currently filed
-    under them is service.py's job (build step 8) and is not wired here yet —
-    this function only validates the parents exist and creates the row, so it
-    never silently no-ops the request, it just doesn't yet perform the
-    re-derivation half of it.
+    seen for the first time after this point can receive it, and the new row
+    is created top-level (no parent).
+
+    A non-empty ``carved_from`` must name exactly one category (multi-parent
+    "DAG" categories are out of scope — see Planned: Category Hierarchy), and
+    that category must currently be top-level (``parent_id IS NULL``):
+    carving from an already-carved leaf is rejected, which is what caps the
+    tree at exactly two levels by construction.
+
+    The first carve under a given parent promotes it to a stem and
+    auto-generates a ``"<Stem> (Other)"`` catch-all sibling leaf, migrating
+    every transaction and merchant-cache row currently filed directly under
+    the parent's own name onto that catch-all — a stem must hold zero
+    transactions directly from the moment it becomes a stem. This function
+    only does that migration (bulk data movement); re-deriving which
+    catch-all merchants actually belong under the *new* leaf is
+    hierarchy.carve_category's job, since that needs the LLM.
+
+    Returns a dict: ``category`` (the new row), ``catch_all`` (the name of
+    the stem's catch-all leaf, or ``None`` if this was a pure top-level
+    addition), ``catch_all_created`` (whether this call is what created it),
+    and ``affected_periods`` (periods touched by the parent -> catch-all
+    migration, empty unless this was the first carve).
     """
     if get_category(db, name) is not None:
         raise ValueError(f"category '{name}' already exists")
 
-    for parent in carved_from:
-        parent_row = get_category(db, parent)
-        if parent_row is None or not parent_row.is_active:
-            raise ValueError(f"carved_from parent '{parent}' is not an active category")
+    if len(carved_from) > 1:
+        raise ValueError("carved_from supports at most one parent category (no multi-parent categories)")
 
-    category = Category(name=name, is_system=False, is_active=True)
+    if not carved_from:
+        category = Category(name=name, is_system=False, is_active=True, parent_id=None)
+        db.add(category)
+        db.flush()
+        return {
+            "category": category,
+            "catch_all": None,
+            "catch_all_created": False,
+            "affected_periods": set(),
+        }
+
+    parent_name = carved_from[0]
+    parent = get_category(db, parent_name)
+    if parent is None or not parent.is_active:
+        raise ValueError(f"carved_from parent '{parent_name}' is not an active category")
+    if parent.parent_id is not None:
+        raise ValueError(f"'{parent_name}' already has a parent and cannot itself be carved from")
+
+    first_carve = not has_children(db, parent)
+
+    category = Category(name=name, is_system=False, is_active=True, parent_id=parent.id)
     db.add(category)
     db.flush()
-    return category
+
+    catch_all = catch_all_name(parent.name)
+    affected_periods: set[str] = set()
+
+    if first_carve:
+        if get_category(db, catch_all) is not None:
+            raise ValueError(f"catch-all category '{catch_all}' already exists unexpectedly")
+
+        db.add(Category(name=catch_all, is_system=False, is_active=True, parent_id=parent.id))
+        db.flush()
+
+        affected_dates = db.scalars(
+            select(Transaction.transaction_date).where(Transaction.category == parent.name)
+        ).all()
+        affected_periods = {d.strftime("%Y-%m") for d in affected_dates}
+
+        db.execute(
+            Transaction.__table__.update()
+            .where(Transaction.category == parent.name)
+            .values(category=catch_all)
+        )
+        db.execute(
+            MerchantCategory.__table__.update()
+            .where(MerchantCategory.category == parent.name)
+            .values(category=catch_all)
+        )
+
+    return {
+        "category": category,
+        "catch_all": catch_all,
+        "catch_all_created": first_carve,
+        "affected_periods": affected_periods,
+    }
 
 
 def soft_delete_category(db: Session, name: str) -> Category:
@@ -197,6 +357,8 @@ def soft_delete_category(db: Session, name: str) -> Category:
         raise ValueError(f"category '{name}' does not exist")
     if category.is_system:
         raise ValueError(f"'{name}' is a system category and cannot be deleted")
+    if has_children(db, category):
+        raise ValueError(f"'{name}' has subcategories carved from it and cannot be deleted directly")
 
     category.is_active = False
     return category
@@ -217,10 +379,14 @@ def hard_delete_category(db: Session, name: str, reassign_to: str) -> set[str]:
         raise ValueError(f"category '{name}' does not exist")
     if category.is_system:
         raise ValueError(f"'{name}' is a system category and cannot be deleted")
+    if has_children(db, category):
+        raise ValueError(f"'{name}' has subcategories carved from it and cannot be deleted directly")
 
     target = get_category(db, reassign_to)
     if target is None or not target.is_active:
         raise ValueError(f"reassign_to target '{reassign_to}' is not an active category")
+    if has_children(db, target):
+        raise ValueError(f"reassign_to target '{reassign_to}' is a parent category and cannot hold transactions directly")
 
     affected_dates = db.scalars(
         select(Transaction.transaction_date).where(Transaction.category == name)

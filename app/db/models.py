@@ -96,6 +96,15 @@ categories
   is_system   BOOLEAN  default False     ← seeded, undeletable (Unknown, Transfer In,
                                             Transfer Out, Interest, Income — see §10.5)
   is_active   BOOLEAN  default True      ← soft delete
+  parent_id   INTEGER  nullable, FK -> categories.id, ON DELETE RESTRICT
+                                          ← self-referential, two levels only (v1.3 hierarchy).
+                                            NULL = top-level. A category with >=1 children is a
+                                            "stem" (pure grouping label, holds no transactions
+                                            directly) — stem-ness is derived from whether any row
+                                            points at it, not a stored flag. carved_from on
+                                            POST /categories may only target a row with
+                                            parent_id IS NULL, capping the tree at 2 levels by
+                                            construction.
   created_at  DATETIME default now
 """
 
@@ -110,6 +119,10 @@ class Category(Base):
     is_system: Mapped[bool] = mapped_column(default=False)
 
     is_active: Mapped[bool] = mapped_column(default=True)
+
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("categories.id", ondelete="RESTRICT"), index=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 

@@ -26,17 +26,17 @@ class SummaryResponse(BaseModel):
     
 
 @router.get("/summary", tags=["summary"], response_model=list[SummaryResponse])
-def get_summary(db: Session = Depends(get_db), period: str | None = None):
+def get_summary(db: Session = Depends(get_db), period: str | None = None, rollup: bool = False):
     if period is None:
         period = date.today().strftime("%Y-%m")
-    result = queries.get_summary_by_period(db, period)
+    result = queries.get_summary_by_period(db, period, rollup=rollup)
     return result
 
 
 @router.get("/summary/monthly", tags=["summary"], response_model=list[SummaryResponse])
-def get_monthly_summary(db: Session = Depends(get_db)):
+def get_monthly_summary(db: Session = Depends(get_db), rollup: bool = False):
     today = date.today()
     end_period = today.strftime("%Y-%m")
     start_period = date(today.year - 1, today.month, 1).strftime("%Y-%m")
-    result = queries.get_summary_monthly(db, start_period, end_period)
+    result = queries.get_summary_monthly(db, start_period, end_period, rollup=rollup)
     return result

@@ -35,7 +35,7 @@ from app.categorise.rules import decide
 from app.db.queries import (
     apply_category_to_key,
     get_uncategorised,
-    list_categories,
+    list_leaf_categories,
     load_merchant_cache,
     upsert_merchant,
 )
@@ -161,7 +161,10 @@ def categorise(db: Session, categoriser: Categoriser) -> dict:
     if not miss_keys:
         return stats
 
-    taxonomy = [c.name for c in list_categories(db)]
+    # Stems are excluded — a category with children holds zero transactions
+    # directly once it's carved from (§Planned: Category Hierarchy), so the
+    # LLM/rules layer must never be able to answer with one.
+    taxonomy = [c.name for c in list_leaf_categories(db)]
 
     for batch in _chunked(miss_keys, BATCH_SIZE):
         stats["llm_batches_attempted"] += 1
