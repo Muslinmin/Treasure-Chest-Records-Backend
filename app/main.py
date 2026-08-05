@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.api.routers import ingest
 from app.api.routers import transactions
 from app.api.routers import summary
+from app.api.routers import categories
 
 
 import logging
@@ -25,6 +26,7 @@ app = FastAPI()
 app.include_router(ingest.router)
 app.include_router(transactions.router)
 app.include_router(summary.router)
+app.include_router(categories.router)
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)

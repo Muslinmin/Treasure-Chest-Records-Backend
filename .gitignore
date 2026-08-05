@@ -7,6 +7,9 @@
 *.dbf
 .agent/agent-senior-developer-instructions.md
 *.csv
+# Test fixtures are synthetic and card-masked — safe to commit, and the parser
+# tests cannot run without them.
+!test/fixtures/*.csv
 *.pytest_cache
 __pycache__/
 .pytest_cache/
@@ -14,3 +17,4 @@ __pycache__/
 *.log
 logs/
 data/
+.venv/

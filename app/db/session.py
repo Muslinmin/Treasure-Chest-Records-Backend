@@ -34,6 +34,7 @@ from sqlalchemy.orm import sessionmaker
 from urllib.parse import *
 
 from app.db.models import Base
+from app.db.queries import seed_categories
 
 
 load_dotenv()
@@ -55,12 +56,17 @@ engine = create_engine(CONNECTION)
 def on_connect(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
 
 Base.metadata.create_all(engine)
 
 
 SessionLocal  = sessionmaker(bind=engine)
+
+with SessionLocal() as _seed_session:
+    seed_categories(_seed_session)
+    _seed_session.commit()
 
 
 def get_db():

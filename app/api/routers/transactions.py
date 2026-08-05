@@ -26,7 +26,6 @@ class TransactionResponse(BaseModel):
     category: str | None
     is_settled: bool
     is_category_manual : bool
-    source_file: str | None
 
 
 @router.get("/transactions", tags=["transactions"], response_model=list[TransactionResponse])

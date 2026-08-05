@@ -1,0 +1,10 @@
+"Account Details For:","SYNTHETIC Test Savings Account 000-00000-0",,,,,,,
+"Statement as at:","24 May 2026",,,,,,,
+"",,,,,,,,
+"Transaction Date","Transaction Code","Description","Transaction Ref1","Transaction Ref2","Transaction Ref3","Status","Debit Amount","Credit Amount"
+"20 May 2026","UMC-S","SUBWAY @ TEST MALL SGP 19MAY 4111-1111-1111-1111 000000000000001","SUBWAY @ TEST MALL     SGP 19MAY","4111-1111-1111-1111","000000000000001","Settled",13.20,""
+"20 May 2026","UMC-S","KOPITIAM TEST OUTLET SI SGP 18MAY 4111-1111-1111-1111 000000000000002","KOPITIAM TEST OUTLET   SI SGP 18MAY","4111-1111-1111-1111","000000000000002","Settled",3.40,""
+"19 May 2026","ITR","COFFEE STALL 12","COFFEE STALL 12","","","Settled",4.50,""
+"19 May 2026","ITR","COFFEE STALL 12","COFFEE STALL 12","","","Settled",4.50,""
+"18 May 2026","ICT","Incoming PayNow Ref 0000001 From: JANE DOE OTHR PayNow Transfer","Incoming PayNow Ref 0000001","From: JANE DOE","OTHR PayNow Transfer","Settled","",450
+"17 May 2026","UMC-S","PENDING TEST SHOP SI SGP 16MAY 4111-1111-1111-1111 000000000000003","PENDING TEST SHOP      SI SGP 16MAY","4111-1111-1111-1111","000000000000003","Settled",9.99,""

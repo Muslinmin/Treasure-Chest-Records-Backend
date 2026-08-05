@@ -1,26 +1,31 @@
-from pathlib import Path
-import csv
-
-
 """
 transactions
   transaction_date DATE     NOT NULL
   amount_cents     INTEGER  NOT NULL        ← $12.50 stored as 1250
-  description      TEXT
+  description      TEXT                     ← card number masked before storage
   transaction_code TEXT                     ← nullable, bank's internal code
-  vendor_name             TEXT                     ← vendor name, nullable
+  vendor_name      TEXT                     ← vendor name, nullable, display only
   is_settled       BOOLEAN  NOT NULL        ← True/False only
   category         TEXT                     ← nullable, filled later
   is_category_manual BOOLEAN DEFAULT FALSE
-  source_file      TEXT                     ← which CSV this came from
+  fingerprint      TEXT                     ← sha256 row identity, see identity.py
 
+`Transaction Ref2` and `Transaction Ref3` are read by the DictReader and
+deliberately discarded: they are stripped substrings of `Description`, so they
+carry nothing the description does not already contain. Ref2 is the masked card
+number; Ref3 is the payment-network reference, which for card rows makes
+`Description` unique per transaction.
+
+The filename is not recorded. Identity is a property of the transaction, not of
+the export it arrived in.
 """
 
-
-from datetime import datetime
-
+import csv
 import logging
-import os
+from datetime import datetime
+from pathlib import Path
+
+from app.ingest.identity import compute_fingerprint, mask_card
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +59,9 @@ def parse_csv(filepath: Path) -> list[dict]:
                     continue
                 row_dict["amount_cents"] = amount_cents
 
-                row_dict["description"] = row["Description"]
+                # Masked before storage *and* before hashing, so the stored
+                # value and the hashed value can never diverge.
+                row_dict["description"] = mask_card(row["Description"])
 
                 row_dict["transaction_code"] = row["Transaction Code"]
 
@@ -70,11 +77,14 @@ def parse_csv(filepath: Path) -> list[dict]:
                 row_dict["category"] = None
 
                 row_dict["is_category_manual"] = False
-                
 
-                file_name = os.path.basename(filepath)
-                row_dict["source_file"] = file_name
-            
+                row_dict["fingerprint"] = compute_fingerprint(
+                    row_dict["transaction_date"],
+                    row_dict["amount_cents"],
+                    row_dict["description"],
+                    row_dict["transaction_code"],
+                )
+
                 records.append(row_dict)
     if not records:
         raise Exception(f"Records are empty ! {records}")
