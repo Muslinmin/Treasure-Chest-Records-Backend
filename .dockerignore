@@ -6,6 +6,9 @@ data/
 __pycache__/
 *.pyc
 
+# Host virtualenv: 300MB+ of host-specific wheels the image rebuilds itself
+.venv/
+
 # Version Control: Unnecessary for runtime
 .git/
 .gitignore
