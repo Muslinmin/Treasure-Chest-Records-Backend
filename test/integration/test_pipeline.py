@@ -1,58 +1,61 @@
-"""End-to-end ingest: CSV on disk → rows + summary → file moved.
+"""End-to-end ingest: uploaded CSV bytes → rows + summary → file archived.
 
 The acceptance test for v1.1 lives here: a second ingest of the same file must
-insert 0.
+insert 0. Rewritten for v1.4 — the inbox/outbox/failed folder triplet is gone;
+callers now hand ingest_uploads (filename, bytes) tuples directly, and every
+uploaded file lands in one archive dir named
+`{timestamp}_{stem}_{pass|failed}{ext}` (see the Planned: v1.4 design note in
+.agent/architecture_and_progress.md).
 """
-
-import shutil
 
 import pytest
 from sqlalchemy import func, select
 
 from app.db.models import Summary, Transaction
-from app.ingest.pipeline import ingest_inbox, process_file
+from app.ingest.pipeline import ingest_uploads, process_upload
 
 from test.conftest import FIXTURES
 
 
 @pytest.fixture
-def drop(boxes):
-    """Copy a fixture into the inbox under an arbitrary name."""
+def upload():
+    """Read a fixture file's bytes under an arbitrary upload name."""
 
-    def _drop(fixture_name: str, as_name: str | None = None):
-        target = boxes["inbox"] / (as_name or fixture_name)
-        shutil.copy(FIXTURES / fixture_name, target)
-        return target
+    def _upload(fixture_name: str, as_name: str | None = None) -> tuple[str, bytes]:
+        content = (FIXTURES / fixture_name).read_bytes()
+        return (as_name or fixture_name, content)
 
-    return _drop
+    return _upload
 
 
-def run(db, boxes):
-    return ingest_inbox(db, boxes["inbox"], boxes["outbox"], boxes["failed"])
+def run(db, archive, uploads):
+    return ingest_uploads(db, uploads, archive)
 
 
 def row_count(db) -> int:
     return db.scalar(select(func.count()).select_from(Transaction))
 
 
+def find_archived(archive, original_stem: str, outcome: str):
+    return [p for p in archive.iterdir() if p.stem.endswith(f"_{original_stem}_{outcome}")]
+
+
 class TestHappyPath:
-    def test_ingests_every_amount_bearing_row(self, db, boxes, drop):
-        drop("sample.csv")
-        report = run(db, boxes)
+    def test_ingests_every_amount_bearing_row(self, db, archive, upload):
+        report = run(db, archive, [upload("sample.csv")])
 
         assert report == [{"file": "sample.csv", "status": "ok", "inserted": 6, "skipped": 0}]
         assert row_count(db) == 6
 
-    def test_moves_the_file_to_the_outbox(self, db, boxes, drop):
-        drop("sample.csv")
-        run(db, boxes)
+    def test_archives_the_file_with_a_pass_suffix(self, db, archive, upload):
+        run(db, archive, [upload("sample.csv")])
 
-        assert (boxes["outbox"] / "sample.csv").exists()
-        assert not (boxes["inbox"] / "sample.csv").exists()
+        matches = find_archived(archive, "sample", "pass")
+        assert len(matches) == 1
+        assert matches[0].suffix == ".csv"
 
-    def test_recomputes_the_summary_for_the_affected_period(self, db, boxes, drop):
-        drop("sample.csv")
-        run(db, boxes)
+    def test_recomputes_the_summary_for_the_affected_period(self, db, archive, upload):
+        run(db, archive, [upload("sample.csv")])
 
         rows = db.scalars(select(Summary)).all()
         assert {r.period for r in rows} == {"2026-05"}
@@ -60,62 +63,59 @@ class TestHappyPath:
         # -1320 -340 -450 -450 +45000 -999
         assert sum(r.total_cents for r in rows) == 41441
 
-    def test_ignores_non_csv_files(self, db, boxes):
-        (boxes["inbox"] / "notes.txt").write_text("not a csv")
-        assert run(db, boxes) == []
+    def test_rejects_non_csv_files(self, db, archive):
+        """v1.4 behavior change: a folder scan silently skipped non-.csv
+        files; a direct-upload caller needs to know why theirs didn't go
+        through, so it's reported as a failed entry instead."""
+        report = run(db, archive, [("notes.txt", b"not a csv")])
+
+        assert report == [
+            {"file": "notes.txt", "status": "failed", "error": "Not a CSV file: notes.txt"}
+        ]
         assert row_count(db) == 0
+        assert len(find_archived(archive, "notes", "failed")) == 1
 
 
 class TestIdempotency:
-    def test_a_second_ingest_of_the_same_file_inserts_zero(self, db, boxes, drop):
+    def test_a_second_ingest_of_the_same_file_inserts_zero(self, db, archive, upload):
         """The v1.1 acceptance test."""
-        drop("sample.csv")
-        run(db, boxes)
+        run(db, archive, [upload("sample.csv")])
 
-        drop("sample.csv")
-        second = run(db, boxes)
+        second = run(db, archive, [upload("sample.csv")])
 
         assert second == [{"file": "sample.csv", "status": "ok", "inserted": 0, "skipped": 6}]
         assert row_count(db) == 6
 
-    def test_the_filename_does_not_matter(self, db, boxes, drop):
+    def test_the_filename_does_not_matter(self, db, archive, upload):
         """The v1.0 guard keyed on source_file; this is what it could not catch."""
-        drop("sample.csv", "march.csv")
-        run(db, boxes)
+        run(db, archive, [upload("sample.csv", "march.csv")])
 
-        drop("sample.csv", "totally-different-name.csv")
-        second = run(db, boxes)
+        second = run(db, archive, [upload("sample.csv", "totally-different-name.csv")])
 
         assert second[0]["inserted"] == 0
         assert row_count(db) == 6
 
-    def test_re_ingest_does_not_double_the_summary(self, db, boxes, drop):
-        drop("sample.csv")
-        run(db, boxes)
-        drop("sample.csv")
-        run(db, boxes)
+    def test_re_ingest_does_not_double_the_summary(self, db, archive, upload):
+        run(db, archive, [upload("sample.csv")])
+        run(db, archive, [upload("sample.csv")])
 
         rows = db.scalars(select(Summary)).all()
         assert sum(r.tx_count for r in rows) == 6
         assert sum(r.total_cents for r in rows) == 41441
 
-    def test_a_settled_re_export_inserts_nothing(self, db, boxes, drop):
+    def test_a_settled_re_export_inserts_nothing(self, db, archive, upload):
         """sample_settled.csv is sample.csv with the pending row now settled."""
-        drop("sample.csv")
-        run(db, boxes)
+        run(db, archive, [upload("sample.csv")])
 
-        drop("sample_settled.csv")
-        second = run(db, boxes)
+        second = run(db, archive, [upload("sample_settled.csv")])
 
         assert second[0]["inserted"] == 0
         assert row_count(db) == 6
 
-    def test_a_narrow_re_export_erases_nothing(self, db, boxes, drop):
-        drop("sample.csv")
-        run(db, boxes)
+    def test_a_narrow_re_export_erases_nothing(self, db, archive, upload):
+        run(db, archive, [upload("sample.csv")])
 
-        drop("sample_narrow.csv")
-        second = run(db, boxes)
+        second = run(db, archive, [upload("sample_narrow.csv")])
 
         assert second[0] == {
             "file": "sample_narrow.csv",
@@ -127,36 +127,61 @@ class TestIdempotency:
 
 
 class TestFailureHandling:
-    def test_an_unparseable_file_is_moved_to_failed(self, db, boxes, drop):
-        drop("empty.csv")
-        report = run(db, boxes)
+    def test_an_unparseable_file_is_archived_as_failed(self, db, archive, upload):
+        report = run(db, archive, [upload("empty.csv")])
 
         assert report[0]["status"] == "failed"
         assert "Records are empty" in report[0]["error"]
-        assert (boxes["failed"] / "empty.csv").exists()
+        assert len(find_archived(archive, "empty", "failed")) == 1
         assert row_count(db) == 0
 
-    def test_the_file_is_the_unit_of_atomicity(self, db, boxes, drop):
+    def test_the_file_is_the_unit_of_atomicity(self, db, archive, upload):
         """A bad file must not roll back a good one already committed."""
-        drop("sample.csv", "a-good.csv")
-        drop("empty.csv", "b-bad.csv")
+        uploads = [upload("sample.csv", "a-good.csv"), upload("empty.csv", "b-bad.csv")]
 
-        report = {entry["file"]: entry for entry in run(db, boxes)}
+        report = {entry["file"]: entry for entry in run(db, archive, uploads)}
 
         assert report["a-good.csv"]["status"] == "ok"
         assert report["b-bad.csv"]["status"] == "failed"
         assert row_count(db) == 6
-        assert (boxes["outbox"] / "a-good.csv").exists()
-        assert (boxes["failed"] / "b-bad.csv").exists()
+        assert len(find_archived(archive, "a-good", "pass")) == 1
+        assert len(find_archived(archive, "b-bad", "failed")) == 1
 
 
 class TestReportShape:
-    def test_process_file_reports_inserted_and_skipped(self, db, boxes, drop):
-        path = drop("sample.csv")
-        report = process_file(path, db, boxes["outbox"], boxes["failed"])
+    def test_process_upload_reports_inserted_and_skipped(self, db, archive, upload):
+        file_name, content = upload("sample.csv")
+        report = process_upload(file_name, content, db, archive)
 
         assert set(report) == {"file", "status", "inserted", "skipped"}
         assert "rows" not in report
 
-    def test_an_empty_inbox_reports_nothing(self, db, boxes):
-        assert run(db, boxes) == []
+    def test_no_uploads_reports_nothing(self, db, archive):
+        assert run(db, archive, []) == []
+
+
+class TestArchivingDisabled:
+    """archive_path=None (e.g. a cloud deploy with no persistent volume for
+    raw uploads) — ingest must still fully work, it just writes nothing to
+    disk beyond a temp file that's cleaned up automatically."""
+
+    def test_ingestion_succeeds_with_no_archive_path(self, db, upload):
+        report = run(db, None, [upload("sample.csv")])
+
+        assert report == [{"file": "sample.csv", "status": "ok", "inserted": 6, "skipped": 0}]
+        assert row_count(db) == 6
+
+    def test_a_failed_parse_still_reports_correctly(self, db, upload):
+        report = run(db, None, [upload("empty.csv")])
+
+        assert report[0]["status"] == "failed"
+        assert "Records are empty" in report[0]["error"]
+        assert row_count(db) == 0
+
+    def test_rejects_non_csv_files_without_touching_disk(self, db):
+        report = run(db, None, [("notes.txt", b"not a csv")])
+
+        assert report == [
+            {"file": "notes.txt", "status": "failed", "error": "Not a CSV file: notes.txt"}
+        ]
+        assert row_count(db) == 0

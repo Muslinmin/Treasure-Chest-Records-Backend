@@ -34,10 +34,12 @@ a single shared secret provisioned out of band (the server's `.env`).
 
 ## `POST /ingest`
 
-Ingests every CSV currently sitting in the server's watched inbox folder, then automatically runs
-categorisation on whatever became uncategorised as a result — one call does both.
+Ingests one or more CSV files sent directly in the request, then automatically runs categorisation
+on whatever became uncategorised as a result — one call does both.
 
-**Request:** no body.
+**Request:** `multipart/form-data`, one or more files under the `files` field. Every uploaded file
+is archived server-side afterward (filename suffixed `_pass`/`_failed` to record the outcome) —
+there is no server-side watched folder to drop files into anymore.
 
 **Response `200`:**
 
@@ -61,16 +63,19 @@ categorisation on whatever became uncategorised as a result — one call does bo
 }
 ```
 
-- `files` is empty (`[]`) if the inbox had nothing to ingest.
+- `files` is empty (`[]`) if no files were sent.
+- A file whose name doesn't end in `.csv` is reported as a `"failed"` entry (`"error": "Not a CSV
+  file: <name>"`) rather than being silently ignored.
 - `categorised` can be `{}` if the categorisation step itself failed unexpectedly (network/provider
   outage, misconfiguration) — **this never affects `files`**: ingest results are committed and
-  files moved to the outbox regardless of whether categorisation succeeds.
+  files archived regardless of whether categorisation succeeds.
 - Money values inside newly-inserted rows aren't returned here — call `GET /transactions` /
   `GET /summary` afterward to read the actual data.
 
-> **Breaking change note:** this endpoint used to return a bare JSON array (just what `files` is
-> now). It now returns an object. Any existing client parsing `POST /ingest`'s response as a list
-> needs to be updated to read `response.files` instead.
+> **Breaking change note:** this endpoint used to take no request body (it scanned a server-side
+> inbox folder) and return a bare JSON array. It now requires a `multipart/form-data` body with the
+> file(s) to ingest, and the response is an object — any existing client needs to be updated both to
+> send files and to read `response.files` instead of treating the response as a list.
 
 ---
 
@@ -244,7 +249,8 @@ The ones that actually affect client behavior:
   [Category Hierarchy](.agent/architecture_and_progress.md#category-hierarchy-v13) in the
   architecture doc. It has never run against the real (private) transaction history or a real LLM
   provider, only synthetic fixtures and a stub categoriser — see Known Gaps there.
-- `POST /ingest`'s response shape changed to an object (see the breaking-change note above).
+- `POST /ingest`'s request shape (now `multipart/form-data`) and response shape (now an object)
+  both changed (see the breaking-change note above).
 - LLM-driven categorisation may take a noticeable pause on the *first* `POST /ingest` after a large
   backfill (many new merchants in one batch) — subsequent calls are fast (steady-state is usually
   0–2 new merchants per import).

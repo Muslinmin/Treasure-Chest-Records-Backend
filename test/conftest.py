@@ -42,9 +42,8 @@ def db() -> Session:
 
 
 @pytest.fixture
-def boxes(tmp_path: Path) -> dict[str, Path]:
-    """inbox / outbox / failed triplet under a per-test temp directory."""
-    paths = {name: tmp_path / name for name in ("inbox", "outbox", "failed")}
-    for path in paths.values():
-        path.mkdir()
-    return paths
+def archive(tmp_path: Path) -> Path:
+    """Single archive dir for the v1.4 upload pipeline, under a per-test temp directory."""
+    path = tmp_path / "archive"
+    path.mkdir()
+    return path

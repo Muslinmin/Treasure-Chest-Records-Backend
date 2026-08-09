@@ -19,8 +19,6 @@ So layer 0 resolves 3 of 6 rows, and the empty-cache run puts the other 3
 distinct merchant keys into one LLM batch.
 """
 
-import shutil
-
 import pytest
 from sqlalchemy import select
 
@@ -28,7 +26,7 @@ from app.categorise import service
 from app.categorise.service import categorise
 from app.db.models import Summary
 from app.db.queries import get_uncategorised, load_merchant_cache
-from app.ingest.pipeline import ingest_inbox
+from app.ingest.pipeline import ingest_uploads
 
 from test.conftest import FIXTURES
 
@@ -51,20 +49,10 @@ class DictCategoriser:
 
 
 @pytest.fixture
-def drop(boxes):
-    def _drop(fixture_name: str, as_name: str | None = None):
-        target = boxes["inbox"] / (as_name or fixture_name)
-        shutil.copy(FIXTURES / fixture_name, target)
-        return target
-
-    return _drop
-
-
-@pytest.fixture
-def ingested(db, boxes, drop):
+def ingested(db, archive):
     """sample.csv, already ingested — six rows, none categorised yet."""
-    drop("sample.csv")
-    ingest_inbox(db, boxes["inbox"], boxes["outbox"], boxes["failed"])
+    content = (FIXTURES / "sample.csv").read_bytes()
+    ingest_uploads(db, [("sample.csv", content)], archive)
     return db
 
 
