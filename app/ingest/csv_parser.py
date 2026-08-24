@@ -33,10 +33,13 @@ def parse_csv(filepath: Path) -> list[dict]:
     csv_file = Path(filepath)
     records = list()
     with csv_file.open(mode="r", encoding="utf-8-sig") as f:
+        headers = None
         for line in f:
             if "Transaction Date" in line:
                 headers = next(csv.reader([line]))
                 break
+        if headers is None:
+            raise Exception("Headers are empty !")
         reader = csv.DictReader(f, fieldnames=headers)
         for row in reader:
             row_dict = {} #initialize a new row dictionary for clean tracking below:

@@ -135,6 +135,15 @@ class TestFailureHandling:
         assert len(find_archived(archive, "empty", "failed")) == 1
         assert row_count(db) == 0
 
+    def test_a_headerless_file_gets_a_clean_error_not_a_leaked_exception(self, db, archive, upload):
+        report = run(db, archive, [upload("no_header.csv")])
+
+        assert report[0]["status"] == "failed"
+        assert "Headers are empty" in report[0]["error"]
+        assert "UnboundLocalError" not in report[0]["error"]
+        assert len(find_archived(archive, "no_header", "failed")) == 1
+        assert row_count(db) == 0
+
     def test_the_file_is_the_unit_of_atomicity(self, db, archive, upload):
         """A bad file must not roll back a good one already committed."""
         uploads = [upload("sample.csv", "a-good.csv"), upload("empty.csv", "b-bad.csv")]

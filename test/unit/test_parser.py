@@ -53,6 +53,10 @@ class TestRowExtraction:
         with pytest.raises(Exception, match="Records are empty"):
             parse_csv(FIXTURES / "empty.csv")
 
+    def test_raises_a_clean_error_when_no_header_row_is_found(self):
+        with pytest.raises(Exception, match="Headers are empty"):
+            parse_csv(FIXTURES / "no_header.csv")
+
 
 class TestCardMasking:
     def test_card_numbers_are_masked_in_the_description(self, records):
