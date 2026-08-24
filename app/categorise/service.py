@@ -73,9 +73,16 @@ def _apply_and_track(db, key, rows, category, stat_name, stats, affected_periods
         affected_periods.update(_period_of(row) for row in rows)
 
 
-def categorise(db: Session, categoriser: Categoriser) -> dict:
-    """Resolve every uncategorised row. Returns per-layer counts for the caller."""
-    rows = get_uncategorised(db)
+def categorise(db: Session, categoriser: Categoriser, transaction_ids: list[int] | None = None) -> dict:
+    """Resolve every uncategorised row. Returns per-layer counts for the caller.
+
+    ``transaction_ids``, if given, restricts resolution to just those rows —
+    e.g. an ingest job scoping itself to the rows its own upload inserted,
+    rather than every uncategorised row in the table. Cache/cluster/fuzzy
+    lookups (layers 1-3) still consult the full merchant cache regardless;
+    only which rows get *written to* is scoped.
+    """
+    rows = get_uncategorised(db, transaction_ids)
     stats = {
         "rows": len(rows),
         "resolved_by_rules": 0,

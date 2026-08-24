@@ -49,13 +49,13 @@ Treasure-Chest-Records-Backend/
 │   │       ├── summary.py          GET  /summary, GET /summary/monthly
 │   │       └── categories.py       POST /categorise, POST/DELETE/GET /categories
 │   ├── db/
-│   │   ├── models.py               Transaction, Summary, Category, MerchantCategory
-│   │   ├── queries.py              inserts, reads, category/merchant-cache CRUD
+│   │   ├── models.py               Transaction, Summary, Category, MerchantCategory, IngestJob
+│   │   ├── queries.py              inserts, reads, category/merchant-cache CRUD, ingest-job CRUD
 │   │   └── session.py              engine, SQLCipher URL, WAL + FK pragmas, get_db()
 │   ├── ingest/
 │   │   ├── csv_parser.py           Bank CSV → list[dict]
 │   │   ├── identity.py             mask_card / normalise / compute_fingerprint
-│   │   └── pipeline.py             ingest_uploads() / process_upload() / ingest_and_categorise()
+│   │   └── pipeline.py             ingest_uploads() / process_upload() / run_categorisation_job()
 │   ├── categorise/
 │   │   ├── normalise.py            transaction_code + Ref1 → merchant key (pure)
 │   │   ├── cluster.py              prefix clustering over the merchant-key corpus (pure)
@@ -102,6 +102,11 @@ categories
 merchant_categories
   id, merchant_key (unique), category (FK → categories.name, ON DELETE RESTRICT ON UPDATE CASCADE),
   source ('rule' | 'llm' | 'manual'), hit_count, created_at, updated_at
+
+ingest_jobs
+  id (uuid4, PK), status ('pending' | 'running' | 'completed' | 'failed'),
+  result (nullable, JSON stats dict once completed), error (nullable), created_at,
+  updated_at (liveness signal for staleness checks)
 ```
 
 **Row identity (dedupe):** `fingerprint = sha256(transaction_date | amount_cents | masked
@@ -195,12 +200,13 @@ the ingest-phase and categorise-phase durations separately, since those are the 
 `POST /ingest` a caller is most likely to want broken down (the LLM call inside categorise is the
 one that can vary widely). See Observability below.
 
-**Tests:** 212 passing (`pytest test -q`) — pure-function unit tests for identity/normalise/
+**Tests:** 222 passing (`pytest test -q`) — pure-function unit tests for identity/normalise/
 rules/cluster/LLM-router/categoriser, and DB-backed integration tests for ingest, aggregation,
 categories, merchant cache, category hierarchy (`test/integration/test_hierarchy.py`), summary
 rollup (`test/integration/test_summary_queries.py`), the full categorise pipeline (against a
-stub/dict-backed fake categoriser — no network, no spend), and archive-disabled ingest
-(`archive_path=None`).
+stub/dict-backed fake categoriser — no network, no spend), archive-disabled ingest
+(`archive_path=None`), and async ingest jobs (`test/integration/test_ingest_job.py` — see Async
+Ingest Jobs (v1.5) below).
 
 ---
 
@@ -208,7 +214,8 @@ stub/dict-backed fake categoriser — no network, no spend), and archive-disable
 
 | Endpoint | Notes |
 |---|---|
-| `POST /ingest` | `multipart/form-data` CSV upload(s); ingests then auto-categorises. Returns `{"files": [...], "categorised": {...}}` |
+| `POST /ingest` | `multipart/form-data` CSV upload(s); ingests synchronously, dispatches categorisation as a background job. Returns `202` + `{"files": [...], "job_id": ..., "status_url": ...}` |
+| `GET /ingest/jobs/{job_id}` | Poll an ingest job's status. `{"job_id", "status", "result", "error"}`; `Retry-After` header set while `pending`/`running` |
 | `GET /transactions` | Filters: date range, category, limit/offset |
 | `GET /summary` | Defaults to current month; `?rollup=true` groups by parent category |
 | `GET /summary/monthly` | Trailing 12 months; `?rollup=true` as above |
@@ -466,11 +473,83 @@ request and logs `{method} {path} -> {status} in {duration_ms}ms` at INFO level,
 whether Sentry is configured — this is the plain-logging half of the profiling ask, Sentry's own
 performance tracing is the other half once a DSN is set.
 
-**Phase timing (`app/ingest/pipeline.py`).** `ingest_and_categorise` separately times and logs the
-ingest phase (`ingest_uploads` — parse/insert/aggregate for every uploaded file) and the categorise
-phase (rules → cache → cluster → fuzzy → LLM), since those two have very different latency profiles
-— ingest is local CPU/DB work, categorise can make network calls to an LLM provider. Breaking them
-out in the log line answers "which part was slow" without needing to reach for Sentry's trace view.
+**Phase timing (`app/ingest/pipeline.py`).** Categorisation separately times and logs its own phase
+(rules → cache → cluster → fuzzy → LLM), since ingest (local CPU/DB work) and categorise (can make
+network calls to an LLM provider) have very different latency profiles. Answers "which part was
+slow" without needing to reach for Sentry's trace view.
+
+---
+
+## Async Ingest Jobs (v1.5)
+
+Motivated by `POST /ingest` holding the HTTP connection open for however long the LLM
+categorisation phase took — batches of up to 40 merchant keys, awaited sequentially, against a
+provider with no fallback chain and no guaranteed latency bound. A slow or degraded provider meant
+a hung request, independent of anything the client could do about it, and independent of any
+gateway/proxy timeout sitting in front of the app. `categorise()` was already accidentally
+well-suited to running detached from the request: its failure handling (a failed LLM batch is
+logged, the loop breaks, and the affected rows are simply left `NULL` for the next run to pick up)
+is already idempotent and resumable — the missing piece was decoupling it from the request/response
+cycle that triggered it.
+
+**Contract change.** `POST /ingest` now does only the ingest phase (parse, insert, archive — fast,
+local, DB-only) before responding. It returns `202 Accepted` with a `Location` header and
+`{"files": [...], "job_id": ..., "status_url": "/ingest/jobs/{job_id}"}` — `categorised` is gone
+from the immediate response. The client polls `GET /ingest/jobs/{job_id}` (`Retry-After: 3` while
+`pending`/`running`) until it sees a terminal `status`, at which point `result` holds exactly what
+`categorised` used to (the same per-layer stats dict from `categorise()`), or `error` explains a
+failure. This supersedes the `{"files": [...], "categorised": {...}}` synchronous contract from
+v1.2/v1.4 — `ingest_and_categorise` is removed, not kept alongside the new path.
+
+**Job scoping (`app/db/queries.py`, `app/categorise/service.py`).** `categorise()` used to run
+against every uncategorised row in the table, full stop — fine when it ran once per request inline,
+but a real correctness problem once jobs run independently: two ingests close together could each
+see (and take credit for, or race on) rows the other one inserted. `insert_records` and
+`ingest_uploads`/`process_upload` gained an optional `collect_ids: list[int] | None` out-param —
+populated via one `db.flush()` after the insert loop (skipped entirely when no caller asks for it,
+so existing callers see zero behaviour change) — and `get_uncategorised`/`categorise()` gained an
+optional `transaction_ids` filter. A job is now scoped to exactly the rows its own upload inserted;
+cache/cluster/fuzzy lookups (layers 1-3) still consult the full merchant cache as before — only
+which rows get *written to* is scoped.
+
+**`IngestJob` (`app/db/models.py`, new table).** `id` (uuid4), `status`
+(`pending`/`running`/`completed`/`failed`), `result` (JSON stats, once `completed`), `error`, and
+`updated_at` as the liveness signal the two reconciliation mechanisms below key off. No Alembic
+migration needed — it's a new table, and the app still bootstraps schema via
+`Base.metadata.create_all()` (see Known Gaps).
+
+**Background execution (`app/ingest/pipeline.py:run_categorisation_job`).** Dispatched via FastAPI's
+`BackgroundTasks.add_task` from the router — runs after the response is sent, in-process, no new
+infra (no Celery/Redis; not worth it at single-user scale). Opens its own DB session via a
+`session_factory` passed in (`SessionLocal` in production; a test double in the test suite) rather
+than reusing the request-scoped session, which FastAPI closes as soon as the response goes out. An
+exception escaping `categorise()` entirely (as opposed to a per-batch LLM failure, which
+`categorise()` already catches and reports in its own stats — that still ends the job `completed`,
+not `failed`) marks the job `failed` rather than leaving it stuck `running` forever.
+
+**Two failure modes for a job that never reaches a terminal state, two independent fixes:**
+- *Process restart mid-job* — nothing survives to finish an in-process background task across a
+  restart. `reconcile_orphaned_jobs` runs once at startup (`app/main.py`'s `on_event("startup")`)
+  and marks anything still `pending`/`running` at boot time `failed` (`"interrupted by server
+  restart"`) — provably orphaned, not just slow, since nothing was alive when the process booted.
+- *Hung without crashing* (e.g. a provider call that never returns rather than erroring) —
+  reconciliation alone misses this, since the process is still alive. `get_ingest_job` instead
+  checks staleness lazily, on every poll: a `running` job whose `updated_at` is older than
+  `STALE_JOB_AFTER` (10 minutes — well past a realistic batch run) is flipped to `failed`
+  (`"stale: no progress detected"`) right there, no separate sweeper process needed. Either way, a
+  polling client always converges to a terminal status.
+
+**Tests** (`test/integration/test_ingest_job.py`, plus a `TestCollectIds` class in
+`test_insert_records.py`): the full upload → job → poll round trip; job scoping (two ingests' rows
+never cross-contaminate each other's job result); an exception outside the batch loop marks the job
+`failed` while a per-batch LLM failure still completes it; staleness reconciliation on poll (stale
+`running` → `failed`, a fresh `running` or a stale `pending` left alone); and startup reconciliation
+(`pending`/`running` → `failed`, `completed`/`failed` left alone). As with v1.4, no router-level
+tests — `fastapi` isn't even installed in the local dev `.venv` (only inside the Docker image), and
+the existing convention already tests routers only through the business-logic functions they call.
+
+**Not yet decided:** a job's `result`/`error` currently sit in the DB indefinitely — no retention
+policy or cleanup for old `IngestJob` rows.
 
 ---
 
@@ -483,10 +562,11 @@ out in the log line answers "which part was slow" without needing to reach for S
   reached a deployed DB will need real migrations, not a rebuild-and-re-ingest.
 - **`LLM_MODEL` is unset.** Categorisation's LLM layer will fail loudly (logged, ingest unaffected)
   until it's configured.
-- **`POST /ingest`'s request and response shapes both changed** — request went from no body to
-  `multipart/form-data` file upload(s) (v1.4); response went from a bare list to
-  `{"files": [...], "categorised": {...}}` (v1.2). Both are breaking changes; need frontend
-  coordination before deploy.
+- **`POST /ingest`'s request and response shapes have changed repeatedly** — request went from no
+  body to `multipart/form-data` file upload(s) (v1.4); response went from a bare list to
+  `{"files": [...], "categorised": {...}}` (v1.2), and now to `202` + `{"files": [...], "job_id":
+  ..., "status_url": ...}` with a new `GET /ingest/jobs/{job_id}` poll endpoint (v1.5). All are
+  breaking changes; need frontend coordination before deploy.
 - **v1.4 upload size limits and content-type/MIME validation are unspecified** — only the filename
   extension (`*.csv`) is checked before staging a file to disk; no max size is enforced anywhere in
   the stack (FastAPI, Starlette, or the app).

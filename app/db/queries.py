@@ -1,12 +1,14 @@
 
-from app.db.models import Transaction, Summary, Category, MerchantCategory
+from app.db.models import Transaction, Summary, Category, MerchantCategory, IngestJob
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timedelta
+import json
 import logging
+import uuid
 
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,7 @@ STARTING_CATEGORIES = [
 ]
 
 
-def insert_records(db: Session, records: list[dict]) -> dict:
+def insert_records(db: Session, records: list[dict], collect_ids: list[int] | None = None) -> dict:
     """Stage the rows this file contributes that the database does not yet hold.
 
     Dedupe is count reconciliation, not existence. Two identical $4.50 coffees on
@@ -63,6 +65,12 @@ def insert_records(db: Session, records: list[dict]) -> dict:
 
     Returns ``{"inserted": int, "skipped": int}``. Re-ingesting a file the
     database already covers is a success with ``inserted == 0``, not an error.
+
+    ``collect_ids``, if given, is extended with the ids of the rows actually
+    inserted (requires a ``flush`` to populate autoincrement ids — skipped
+    entirely when no caller asks for them). This is what lets a caller scope
+    later work — e.g. categorisation — to exactly the rows one upload added,
+    rather than every uncategorised row in the table.
     """
     fingerprints = {record["fingerprint"] for record in records}
 
@@ -77,6 +85,7 @@ def insert_records(db: Session, records: list[dict]) -> dict:
     seen = Counter()
     inserted = 0
     skipped = 0
+    new_rows = [] if collect_ids is not None else None
 
     for record in records:
         fingerprint = record["fingerprint"]
@@ -84,8 +93,15 @@ def insert_records(db: Session, records: list[dict]) -> dict:
         if seen[fingerprint] <= existing.get(fingerprint, 0):
             skipped += 1
             continue
-        db.add(Transaction(**record))
+        row = Transaction(**record)
+        db.add(row)
         inserted += 1
+        if new_rows is not None:
+            new_rows.append(row)
+
+    if new_rows:
+        db.flush()
+        collect_ids.extend(row.id for row in new_rows)
 
     logger.info(f"Staged {inserted} records, skipped {skipped} already present")
     return {"inserted": inserted, "skipped": skipped}
@@ -407,16 +423,22 @@ def hard_delete_category(db: Session, name: str, reassign_to: str) -> set[str]:
     return affected_periods
 
 
-def get_uncategorised(db: Session) -> list[Transaction]:
+def get_uncategorised(db: Session, transaction_ids: list[int] | None = None) -> list[Transaction]:
     """Rows §10.1's pipeline still needs to resolve.
 
     ``is_category_manual`` rows are excluded even if ``category`` happens to
     be null — a manual edit that clears a category is still a manual
     decision, not an invitation to auto-categorise.
+
+    ``transaction_ids``, if given, further restricts the result to just
+    those rows — how an ingest job scopes categorisation to the upload that
+    triggered it, instead of every uncategorised row in the table.
     """
     stmt = select(Transaction).where(
         Transaction.category.is_(None), Transaction.is_category_manual.is_(False)
     )
+    if transaction_ids is not None:
+        stmt = stmt.where(Transaction.id.in_(transaction_ids))
     return db.scalars(stmt).all()
 
 
@@ -474,4 +496,64 @@ def apply_category_to_key(
             .where(MerchantCategory.merchant_key == merchant_key)
             .values(hit_count=MerchantCategory.hit_count + updated)
         )
+
     return updated
+
+
+STALE_JOB_AFTER = timedelta(minutes=10)
+
+
+def create_ingest_job(db: Session) -> IngestJob:
+    """Register a new ingest job, ``pending`` until its background run starts."""
+    job = IngestJob(id=str(uuid.uuid4()), status="pending")
+    db.add(job)
+    db.flush()
+    return job
+
+
+def update_ingest_job_status(
+    db: Session, job_id: str, status: str, result: dict | None = None, error: str | None = None
+) -> None:
+    job = db.get(IngestJob, job_id)
+    if job is None:
+        return
+    job.status = status
+    if result is not None:
+        job.result = json.dumps(result)
+    if error is not None:
+        job.error = error
+
+
+def get_ingest_job(db: Session, job_id: str, stale_after: timedelta = STALE_JOB_AFTER) -> IngestJob | None:
+    """Look up a job, reconciling it first if it's gone stale.
+
+    A job stuck ``running`` with no update in over ``stale_after`` means
+    whatever was executing it died without a clean failure (a hung provider
+    call, a killed worker) — nothing will ever move it to a terminal state on
+    its own. Caught here, lazily, on the next poll: no separate sweeper
+    process needed, and a client polling this endpoint always converges to a
+    terminal status instead of waiting forever.
+    """
+    job = db.get(IngestJob, job_id)
+    if job is None:
+        return None
+    if job.status == "running" and datetime.now() - job.updated_at > stale_after:
+        job.status = "failed"
+        job.error = "stale: no progress detected"
+    return job
+
+
+def reconcile_orphaned_jobs(db: Session) -> int:
+    """Close out jobs left mid-flight by an unclean shutdown.
+
+    Jobs run as in-process background tasks, so nothing survives a process
+    restart to finish one — anything still ``pending``/``running`` at boot
+    time is provably orphaned, not just slow. Call once at startup. Returns
+    the number of jobs reconciled.
+    """
+    stmt = select(IngestJob).where(IngestJob.status.in_(["pending", "running"]))
+    orphaned = db.scalars(stmt).all()
+    for job in orphaned:
+        job.status = "failed"
+        job.error = "interrupted by server restart"
+    return len(orphaned)

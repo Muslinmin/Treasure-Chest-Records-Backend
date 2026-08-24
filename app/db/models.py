@@ -167,3 +167,40 @@ class MerchantCategory(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, onupdate=datetime.now
     )
+
+
+"""
+ingest_jobs
+  id          TEXT     PRIMARY KEY   ← uuid4
+  status      TEXT     NOT NULL      ← 'pending' | 'running' | 'completed' | 'failed'
+  result      TEXT                  ← JSON: categorise()'s stats dict, once completed
+  error       TEXT                  ← failure reason, once failed
+  created_at  DATETIME default now
+  updated_at  DATETIME default now, onupdate now  ← liveness signal for staleness checks
+
+POST /ingest returns immediately after the (fast, DB-only) upload phase and
+runs categorisation — which depends on an external LLM provider with
+unbounded latency — as a background job scoped to just this upload's rows.
+The client polls GET /ingest/jobs/{id} instead of holding the request open.
+"""
+
+
+class IngestJob(Base):
+    __tablename__ = "ingest_jobs"
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'running', 'completed', 'failed')"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+
+    status: Mapped[str] = mapped_column(String(10))
+
+    result: Mapped[str | None] = mapped_column(String())
+
+    error: Mapped[str | None] = mapped_column(String())
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )

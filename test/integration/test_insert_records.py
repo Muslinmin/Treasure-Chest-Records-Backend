@@ -218,3 +218,52 @@ class TestStorage:
         insert_records(db, [make_record(), make_record()])
         db.commit()  # must not raise IntegrityError
         assert row_count(db) == 2
+
+
+class TestCollectIds:
+    """collect_ids (v1.5) — how a caller finds out which rows one call
+    actually inserted, e.g. to scope an ingest job's categorisation to just
+    its own upload instead of every uncategorised row in the table."""
+
+    def test_default_is_a_no_op(self, db):
+        """Existing callers that don't ask for ids must see no behaviour
+        change at all — no flush, no extra query."""
+        result = insert_records(db, [make_record(), make_record("TEA")])
+        db.commit()
+
+        assert result == {"inserted": 2, "skipped": 0}
+
+    def test_collects_the_ids_of_inserted_rows_only(self, db):
+        collected: list[int] = []
+        insert_records(db, [make_record("COFFEE"), make_record("TEA")], collect_ids=collected)
+        db.commit()
+
+        stored = {row.fingerprint: row.id for row in db.scalars(select(Transaction)).all()}
+        assert set(collected) == set(stored.values())
+        assert len(collected) == 2
+
+    def test_skipped_rows_are_excluded(self, db):
+        """A second ingest of an already-covered fingerprint inserts nothing
+        — collect_ids must reflect that, not the rows it was handed."""
+        insert_records(db, [make_record("COFFEE")])
+        db.commit()
+
+        collected: list[int] = []
+        insert_records(
+            db, [make_record("COFFEE"), make_record("TEA")], collect_ids=collected
+        )
+        db.commit()
+
+        assert len(collected) == 1
+        only_row = db.scalars(select(Transaction).where(Transaction.id == collected[0])).one()
+        assert only_row.fingerprint == make_record("TEA")["fingerprint"]
+
+    def test_no_inserts_leaves_the_list_empty(self, db):
+        insert_records(db, [make_record()])
+        db.commit()
+
+        collected: list[int] = []
+        insert_records(db, [make_record()], collect_ids=collected)
+        db.commit()
+
+        assert collected == []

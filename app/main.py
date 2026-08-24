@@ -11,6 +11,8 @@ from app.api.routers import ingest
 from app.api.routers import transactions
 from app.api.routers import summary
 from app.api.routers import categories
+from app.db.session import SessionLocal
+from app.db.queries import reconcile_orphaned_jobs
 
 _fmt = logging.Formatter(
     fmt="%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d — %(message)s",
@@ -81,6 +83,21 @@ app.include_router(ingest.router)
 app.include_router(transactions.router)
 app.include_router(summary.router)
 app.include_router(categories.router)
+
+
+@app.on_event("startup")
+def _reconcile_orphaned_ingest_jobs():
+    """Ingest jobs run as in-process background tasks (see
+    app/ingest/pipeline.py:run_categorisation_job) — a restart kills them
+    mid-flight with no chance to update their own status. Anything still
+    pending/running at boot time never had a chance to finish; close it out
+    so a client polling it doesn't wait forever."""
+    with SessionLocal() as db:
+        reconciled = reconcile_orphaned_jobs(db)
+        db.commit()
+        if reconciled:
+            _app_logger.info(f"Reconciled {reconciled} orphaned ingest job(s) from a prior run")
+
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)
