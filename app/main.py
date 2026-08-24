@@ -39,11 +39,20 @@ except OSError:
 
 # No-op until SENTRY_DSN is set (see .env). FastAPI/Starlette request
 # tracing and error capture are auto-instrumented once it's active — no
-# further integration wiring needed.
+# further integration wiring needed. profiles_sample_rate rides on top of
+# traces_sample_rate (profile_lifecycle="trace" ties one profile to each
+# sampled transaction, i.e. each endpoint call) so every /ingest, /summary,
+# /transactions, /categories request gets both a trace and a profile.
+# enable_logs forwards the existing `logging.getLogger(...)` calls across
+# the app (pipeline.py, aggregator.py, this file's own _app_logger, etc.)
+# to Sentry Logs at INFO+ — no per-call-site changes needed.
 sentry_sdk.init(
     dsn=os.getenv("SENTRY_DSN") or None,
     environment=os.getenv("ENVIRONMENT", "development"),
     traces_sample_rate=1.0,  # single-user app: full trace visibility costs nothing
+    profiles_sample_rate=1.0,
+    profile_lifecycle="trace",
+    enable_logs=True,
 )
 
 app = FastAPI()

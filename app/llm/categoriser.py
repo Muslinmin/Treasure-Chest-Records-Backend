@@ -24,6 +24,8 @@ key text is what actually identifies the category.
 import json
 import logging
 
+import sentry_sdk
+
 from app.llm.router import get_llm
 
 logger = logging.getLogger(__name__)
@@ -86,14 +88,16 @@ class Categoriser:
             return {}
 
         router = get_llm()
-        response = router.completion(
-            model="categoriser",
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": _build_user_prompt(keys, taxonomy)},
-            ],
-            response_format=_build_response_schema(taxonomy),
-        )
+        with sentry_sdk.start_span(op="ai.completion", name="litellm.completion") as span:
+            span.set_data("batch_size", len(keys))
+            response = router.completion(
+                model="categoriser",
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": _build_user_prompt(keys, taxonomy)},
+                ],
+                response_format=_build_response_schema(taxonomy),
+            )
 
         payload = json.loads(response.choices[0].message.content)
         results: dict[str, str] = {}

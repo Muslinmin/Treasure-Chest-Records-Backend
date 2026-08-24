@@ -5,6 +5,8 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+
+import sentry_sdk
 from sqlalchemy.orm import Session
 
 from app.ingest.csv_parser import parse_csv
@@ -106,14 +108,17 @@ def ingest_and_categorise(
     logged, not raised.
     """
     ingest_start = time.perf_counter()
-    files = ingest_uploads(db, uploads, archive_path)
+    with sentry_sdk.start_span(op="ingest.uploads", name="ingest_uploads") as span:
+        span.set_data("file_count", len(uploads))
+        files = ingest_uploads(db, uploads, archive_path)
     ingest_ms = (time.perf_counter() - ingest_start) * 1000
     logger.info(f"ingest_uploads: {len(uploads)} file(s) in {ingest_ms:.1f}ms")
 
     categorised = {}
     categorise_start = time.perf_counter()
     try:
-        categorised = categorise(db, categoriser)
+        with sentry_sdk.start_span(op="categorise.run", name="categorise"):
+            categorised = categorise(db, categoriser)
     except Exception:
         logger.exception("Categorisation failed after ingest; ingest itself is unaffected")
     categorise_ms = (time.perf_counter() - categorise_start) * 1000
